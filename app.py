@@ -1,2227 +1,1863 @@
 import base64
-import math
-import os
-import re
-import unicodedata
+import hashlib
+import hmac
+import mimetypes
+from pathlib import Path
 
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
 import streamlit as st
 
-
-# =========================================================
-# CONFIGURACIÓN GENERAL
-# =========================================================
-
 st.set_page_config(
-    page_title="Análisis de Residuos No Peligrosos",
-    page_icon="♻️",
+    page_title="Analisis Diesel SERFOCOL",
+    page_icon="⛽",
     layout="wide",
+    initial_sidebar_state="collapsed",
 )
 
-ARCHIVO_EXCEL = "RESIDUOS NO PELIGROSOS - V01.xlsx"
-LOGO_SUPERIOR = "logo1.png"
-SELLO_AGUA = "logoredondo.png"
-
-AUTOR = "Ricardo Grez"
-CARGO = "Administrador de Contrato"
-VERSION = "1.0"
-
-RESIDUOS = [
-    "RAD",
-    "Corteza",
-    "Escoria",
-    "Ceniza",
-]
-
-TIPOS_COSTO = [
-    "Disposición",
-    "Traslado",
-]
-
-COLORES_RESIDUOS = {
-    "RAD": "#a855f7",
-    "Corteza": "#ff5b3d",
-    "Escoria": "#14d9b2",
-    "Ceniza": "#6574ff",
-}
-
-COLORES_COSTO = {
-    "Traslado": "#ff5b3d",
-    "Disposición": "#6574ff",
-}
-
-MESES = {
-    1: "Enero",
-    2: "Febrero",
-    3: "Marzo",
-    4: "Abril",
-    5: "Mayo",
-    6: "Junio",
-    7: "Julio",
-    8: "Agosto",
-    9: "Septiembre",
-    10: "Octubre",
-    11: "Noviembre",
-    12: "Diciembre",
-}
-
-MESES_NUMERO = {
-    nombre.lower(): numero
-    for numero, nombre in MESES.items()
-}
+ARCHIVO_EXCEL = "DIESEL SERFOCOL- V01.xlsx"
+LOGO_SUPERIOR = "logo1"
+SELLO_AGUA = "logoredondo"
+NOMBRE_INICIAL_SELFIE = "selfie"
 
 
-# =========================================================
-# FUNCIONES DE LIMPIEZA Y FORMATO
-# =========================================================
+def buscar_imagen(nombre_base):
+    for extension in ["", ".png", ".jpg", ".jpeg", ".webp"]:
+        ruta = Path(f"{nombre_base}{extension}")
+        if ruta.exists() and ruta.is_file():
+            return ruta
 
-def normalizar(texto):
-    texto = unicodedata.normalize(
-        "NFD",
-        str(texto).strip().lower(),
-    )
-
-    texto = "".join(
-        caracter
-        for caracter in texto
-        if unicodedata.category(caracter) != "Mn"
-    )
-
-    return re.sub(
-        r"\s+",
-        " ",
-        texto,
-    )
+    return None
 
 
-def buscar_columna(columnas, nombre):
-    mapa = {
-        normalizar(columna): columna
-        for columna in columnas
+def buscar_selfie():
+    extensiones = {
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".webp",
     }
 
-    return mapa.get(
-        normalizar(nombre)
+    archivos = sorted(
+        archivo
+        for archivo in Path(".").glob(
+            f"{NOMBRE_INICIAL_SELFIE}*"
+        )
+        if archivo.is_file()
+        and archivo.suffix.lower() in extensiones
+    )
+
+    return archivos[0] if archivos else None
+
+
+def data_uri(ruta):
+    if not ruta or not ruta.exists():
+        return None
+
+    contenido = base64.b64encode(
+        ruta.read_bytes()
+    ).decode(
+        "utf-8"
+    )
+
+    tipo_mime, _ = mimetypes.guess_type(
+        ruta.name
+    )
+
+    return (
+        f"data:{tipo_mime or 'image/png'};"
+        f"base64,{contenido}"
     )
 
 
-def limpiar_numero(valor):
-    if pd.isna(valor):
-        return 0.0
+logo = data_uri(
+    buscar_imagen(
+        LOGO_SUPERIOR
+    )
+)
 
+sello = data_uri(
+    buscar_imagen(
+        SELLO_AGUA
+    )
+)
+
+selfie = data_uri(
+    buscar_selfie()
+)
+
+
+def calcular_hash(
+    contrasena,
+    salt,
+):
+    return hashlib.pbkdf2_hmac(
+        "sha256",
+        str(
+            contrasena
+        ).encode(
+            "utf-8"
+        ),
+        bytes.fromhex(
+            str(
+                salt
+            )
+        ),
+        200_000,
+    ).hex()
+
+
+def validar_credenciales(
+    usuario,
+    contrasena,
+):
+    try:
+        usuarios = st.secrets[
+            "usuarios"
+        ]
+
+    except Exception:
+        return (
+            False,
+            "No existen usuarios configurados. "
+            "Revise Streamlit Secrets.",
+        )
+
+    usuario = str(
+        usuario
+    ).strip()
+
+    contrasena = str(
+        contrasena
+    )
+
+    if (
+        not usuario
+        or usuario not in usuarios
+    ):
+        return (
+            False,
+            "Usuario o contrasena incorrectos.",
+        )
+
+    datos = usuarios[
+        usuario
+    ]
+
+    # Formato simple:
+    #
+    # [usuarios]
+    # ricardo = "ClaveSegura"
+    #
     if isinstance(
-        valor,
-        (
-            int,
-            float,
-        ),
+        datos,
+        str,
     ):
-        return float(valor)
-
-    texto = re.sub(
-        r"[^0-9,.-]",
-        "",
-        str(valor),
-    )
-
-    if texto in {
-        "",
-        "-",
-    }:
-        return 0.0
-
-    if "," in texto:
-        texto = (
-            texto
-            .replace(".", "")
-            .replace(",", ".")
+        valido = hmac.compare_digest(
+            contrasena,
+            datos,
         )
 
-    elif (
-        "." in texto
-        and len(
-            texto.split(".")[-1]
-        ) == 3
-    ):
-        texto = texto.replace(
-            ".",
-            "",
+        return (
+            (
+                True,
+                None,
+            )
+            if valido
+            else (
+                False,
+                "Usuario o contrasena incorrectos.",
+            )
         )
 
+    # Formato avanzado con hash:
+    #
+    # [usuarios.ricardo]
+    # salt = "..."
+    # password_hash = "..."
+    #
     try:
-        return float(texto)
-
-    except ValueError:
-        return 0.0
-
-
-def convertir_fecha(valor):
-    if pd.isna(valor):
-        return pd.NaT
-
-    if isinstance(
-        valor,
-        pd.Timestamp,
-    ):
-        return valor
-
-    texto = normalizar(valor)
-
-    patron = (
-        r"^(enero|febrero|marzo|abril|mayo|junio|"
-        r"julio|agosto|septiembre|octubre|noviembre|"
-        r"diciembre)\s+(\d{4})$"
-    )
-
-    coincidencia = re.match(
-        patron,
-        texto,
-    )
-
-    if coincidencia:
-        return pd.Timestamp(
-            year=int(
-                coincidencia.group(2)
+        valido = hmac.compare_digest(
+            calcular_hash(
+                contrasena,
+                datos[
+                    "salt"
+                ],
             ),
-            month=MESES_NUMERO[
-                coincidencia.group(1)
-            ],
-            day=1,
+            str(
+                datos[
+                    "password_hash"
+                ]
+            ),
         )
 
-    return pd.to_datetime(
-        valor,
-        errors="coerce",
-        dayfirst=True,
-    )
-
-
-def pesos(valor):
-    try:
-        numero = int(
-            round(
-                float(valor)
+        return (
+            (
+                True,
+                None,
+            )
+            if valido
+            else (
+                False,
+                "Usuario o contrasena incorrectos.",
             )
         )
 
+    except Exception:
         return (
-            "$ "
-            + f"{numero:,}".replace(
-                ",",
-                ".",
-            )
+            False,
+            "La configuracion de usuarios "
+            "en Streamlit Secrets no es valida.",
         )
 
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return "$ 0"
+
+def css_sello():
+    if not sello:
+        return ""
+
+    return f"""
+    .stApp::before {{
+        content: "";
+        position: fixed;
+        top: 17%;
+        left: 50%;
+        transform:
+            translateX(-50%);
+        width:
+            760px;
+        height:
+            760px;
+        background-image:
+            url("{sello}");
+        background-repeat:
+            no-repeat;
+        background-position:
+            center;
+        background-size:
+            contain;
+        opacity:
+            0.075;
+        z-index:
+            0;
+        pointer-events:
+            none;
+    }}
+    """
 
 
-def toneladas(valor):
-    try:
-        texto = f"{float(valor):,.1f}"
-
-        return (
-            texto
-            .replace(",", "X")
-            .replace(".", ",")
-            .replace("X", ".")
-            + " t"
-        )
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return "0,0 t"
-
-
-def porcentaje(valor):
-    try:
-        return (
-            f"{float(valor):.1f}%"
-            .replace(".", ",")
-        )
-
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return "0,0%"
-
-
-def nombre_periodo(fecha):
-    return (
-        f"{MESES[fecha.month]} "
-        f"{fecha.year}"
-    )
-
-
-# =========================================================
-# COMPONENTES VISUALES
-# =========================================================
-
-def seccion(titulo):
+def mostrar_login():
     st.markdown(
-        f'<div class="seccion">{titulo}</div>',
+        f"""
+        <style>
+
+        {css_sello()}
+
+        html,
+        body,
+        .stApp {{
+            min-height:
+                100vh;
+            background:
+                #10182B !important;
+            color:
+                #FFFFFF !important;
+        }}
+
+        .stApp {{
+            border-top:
+                1px solid
+                rgba(
+                    255,
+                    255,
+                    255,
+                    0.95
+                );
+        }}
+
+        header[data-testid="stHeader"],
+        div[data-testid="stToolbar"],
+        div[data-testid="stDecoration"],
+        footer,
+        section[data-testid="stSidebar"],
+        button[data-testid="stSidebarCollapsedControl"] {{
+            display:
+                none !important;
+        }}
+
+        .block-container {{
+            max-width:
+                680px !important;
+            padding-top:
+                0.95rem !important;
+            padding-bottom:
+                0.25rem !important;
+            position:
+                relative;
+            z-index:
+                1;
+        }}
+
+        .contenedor-avatar {{
+            display:
+                flex;
+            justify-content:
+                center;
+            margin:
+                0 auto 10px;
+        }}
+
+        .avatar-circular {{
+            width:
+                148px;
+            height:
+                148px;
+            overflow:
+                hidden;
+            background:
+                #D8D8D8;
+            border:
+                4px solid
+                #F59E0B;
+            border-radius:
+                50%;
+            box-shadow:
+                0 2px 8px
+                rgba(
+                    0,
+                    0,
+                    0,
+                    0.18
+                );
+        }}
+
+        .avatar-circular img {{
+            width:
+                100%;
+            height:
+                100%;
+            object-fit:
+                cover;
+            object-position:
+                center 46%;
+            transform:
+                scale(1.16);
+        }}
+
+        .avatar-vacio {{
+            display:
+                flex;
+            align-items:
+                center;
+            justify-content:
+                center;
+            font-size:
+                66px;
+        }}
+
+        .titulo-login {{
+            color:
+                #FFFFFF;
+            font-size:
+                35px;
+            font-weight:
+                900;
+            line-height:
+                1.12;
+            letter-spacing:
+                -0.6px;
+            text-align:
+                center;
+        }}
+
+        .subtitulo-login {{
+            margin:
+                10px 0 13px;
+            color:
+                #FFFFFF;
+            font-size:
+                15px;
+            font-weight:
+                500;
+            line-height:
+                1.3;
+            text-align:
+                center;
+        }}
+
+        div[data-testid="stForm"] {{
+            padding:
+                0 !important;
+            background:
+                transparent !important;
+            border:
+                none !important;
+        }}
+
+        div[data-testid="stWidgetLabel"] p,
+        div[data-testid="stWidgetLabel"] label,
+        label[data-testid="stWidgetLabel"],
+        label[data-testid="stWidgetLabel"] p {{
+            color:
+                #FFFFFF !important;
+            opacity:
+                1 !important;
+            font-size:
+                13px !important;
+            font-weight:
+                700 !important;
+        }}
+
+        div[data-testid="stTextInput"] input {{
+            min-height:
+                39px !important;
+            color:
+                #111827 !important;
+            background:
+                #F8FAFC !important;
+            border:
+                1px solid
+                #E5E7EB !important;
+            border-radius:
+                8px !important;
+        }}
+
+        div[data-testid="stTextInput"] input:focus {{
+            border-color:
+                #CBD5E1 !important;
+            box-shadow:
+                none !important;
+        }}
+
+        div[data-testid="stFormSubmitButton"] button {{
+            width:
+                100%;
+            min-height:
+                39px !important;
+            color:
+                #FFFFFF !important;
+            background:
+                #F44040 !important;
+            border:
+                1px solid
+                #F44040 !important;
+            border-radius:
+                8px !important;
+            font-size:
+                14px !important;
+            font-weight:
+                700 !important;
+        }}
+
+        div[data-testid="stFormSubmitButton"] button:hover {{
+            background:
+                #E93333 !important;
+            border-color:
+                #E93333 !important;
+        }}
+
+        .pie-login {{
+            margin-top:
+                15px;
+            padding-top:
+                10px;
+            border-top:
+                1px solid
+                rgba(
+                    148,
+                    163,
+                    184,
+                    0.36
+                );
+            text-align:
+                center;
+        }}
+
+        .pie-login-titulo {{
+            color:
+                #FFFFFF;
+            font-size:
+                13px;
+            font-weight:
+                800;
+        }}
+
+        .pie-login-subtitulo,
+        .pie-login-restringido {{
+            margin-top:
+                3px;
+            color:
+                #7FB4F4;
+            font-size:
+                12px;
+            font-weight:
+                500;
+        }}
+
+        @media (
+            max-width:
+                768px
+        ) {{
+            .block-container {{
+                max-width:
+                    92% !important;
+                padding-top:
+                    0.65rem !important;
+            }}
+
+            .avatar-circular {{
+                width:
+                    132px;
+                height:
+                    132px;
+            }}
+
+            .titulo-login {{
+                font-size:
+                    29px;
+            }}
+        }}
+
+        </style>
+        """,
         unsafe_allow_html=True,
     )
 
-
-def tarjeta(
-    titulo,
-    valor,
-    subtitulo,
-    color,
-):
-    st.markdown(
+    avatar = (
         (
-            '<div class="tarjeta">'
-            f'<div class="tarjeta-titulo">{titulo}</div>'
-            f'<div class="tarjeta-valor {color}">{valor}</div>'
-            f'<div class="tarjeta-subtitulo">{subtitulo}</div>'
-            "</div>"
-        ),
+            '<div class="contenedor-avatar">'
+            '<div class="avatar-circular">'
+            f'<img src="{selfie}" '
+            'alt="Fotografia de acceso">'
+            '</div>'
+            '</div>'
+        )
+        if selfie
+        else (
+            '<div class="contenedor-avatar">'
+            '<div class="avatar-circular avatar-vacio">'
+            '👤'
+            '</div>'
+            '</div>'
+        )
+    )
+
+    st.markdown(
+        avatar,
         unsafe_allow_html=True,
     )
 
-
-def aplicar_filtros(
-    dataframe,
-    anios,
-    residuos,
-    meses,
-):
-    salida = dataframe.copy()
-
-    if anios:
-        salida = salida[
-            salida[
-                "Año"
-            ].isin(
-                anios
-            )
-        ]
-
-    if residuos:
-        salida = salida[
-            salida[
-                "Residuo"
-            ].isin(
-                residuos
-            )
-        ]
-
-    if meses:
-        salida = salida[
-            salida[
-                "Mes_Nombre"
-            ].isin(
-                meses
-            )
-        ]
-
-    return salida.copy()
-
-
-def paso_eje(
-    maximo,
-    divisiones=5,
-):
-    if maximo <= 0:
-        return 1
-
-    aproximado = (
-        maximo
-        / divisiones
-    )
-
-    potencia = 10 ** math.floor(
-        math.log10(
-            aproximado
-        )
-    )
-
-    base = (
-        aproximado
-        / potencia
-    )
-
-    if base <= 1:
-        factor = 1
-
-    elif base <= 2:
-        factor = 2
-
-    elif base <= 5:
-        factor = 5
-
-    else:
-        factor = 10
-
-    return (
-        factor
-        * potencia
-    )
-
-
-def aplicar_eje_clp(
-    figura,
-    valores,
-    eje="y",
-):
-    serie = pd.Series(
-        valores,
-        dtype="float64",
-    ).dropna()
-
-    maximo = (
-        float(
-            serie.max()
-        )
-        if not serie.empty
-        else 0
-    )
-
-    paso = paso_eje(
-        maximo
-    )
-
-    limite = (
-        math.ceil(
-            maximo
-            / paso
-        )
-        * paso
-        if maximo > 0
-        else paso
-    )
-
-    marcas = [
-        numero
-        * paso
-        for numero in range(
-            int(
-                limite
-                / paso
-            )
-            + 1
-        )
-    ]
-
-    parametros = {
-        "tickmode": "array",
-        "tickvals": marcas,
-        "ticktext": [
-            pesos(valor)
-            for valor in marcas
-        ],
-        "rangemode": "tozero",
-    }
-
-    if eje == "x":
-        figura.update_xaxes(
-            **parametros
-        )
-
-    else:
-        figura.update_yaxes(
-            **parametros
-        )
-
-    return figura
-
-
-def formato_grafico(
-    figura,
-    altura=470,
-):
-    figura.update_layout(
-        height=altura,
-        plot_bgcolor="#111827",
-        paper_bgcolor="#111827",
-
-        font=dict(
-            color="#e5e7eb",
-            size=13,
-        ),
-
-        title_font=dict(
-            size=20,
-            color="#f8fafc",
-        ),
-
-        legend=dict(
-            title=dict(
-                font=dict(
-                    color="#f8fafc",
-                    size=13,
-                )
-            ),
-
-            font=dict(
-                color="#f8fafc",
-                size=13,
-            ),
-
-            bgcolor="rgba(30, 41, 59, 0.82)",
-            bordercolor="#475569",
-            borderwidth=1,
-            itemsizing="constant",
-            tracegroupgap=6,
-        ),
-
-        margin=dict(
-            l=35,
-            r=35,
-            t=70,
-            b=55,
-        ),
-
-        hoverlabel=dict(
-            bgcolor="#172033",
-            font_color="#f8fafc",
-        ),
-    )
-
-    estilo_eje = {
-        "exponentformat": "none",
-
-        "tickfont": {
-            "color": "#cbd5e1",
-            "size": 11,
-        },
-
-        "title_font": {
-            "color": "#e5e7eb",
-            "size": 12,
-        },
-
-        "gridcolor": (
-            "rgba(148, 163, 184, 0.12)"
-        ),
-    }
-
-    figura.update_xaxes(
-        **estilo_eje
-    )
-
-    figura.update_yaxes(
-        **estilo_eje
-    )
-
-    return figura
-
-
-def grafico_linea(
-    dataframe,
-    valor_y,
-    titulo,
-    etiqueta,
-    formateador,
-    color,
-    eje_clp=False,
-):
-    if dataframe.empty:
-        st.info(
-            "No existen datos disponibles "
-            "para mostrar este gráfico."
-        )
-
-        return
-
-    figura = px.line(
-        dataframe,
-        x="Periodo_Texto",
-        y=valor_y,
-        markers=True,
-        title=titulo,
-        template="plotly_dark",
-    )
-
-    figura.update_traces(
-        line=dict(
-            width=3,
-            color=color,
-        ),
-
-        marker=dict(
-            size=4,
-            opacity=0.70,
-            color=color,
-
-            line=dict(
-                width=0,
-            ),
-        ),
-
-        customdata=dataframe[
-            valor_y
-        ].apply(
-            formateador
-        ),
-
-        hovertemplate=(
-            "<b>%{x}</b>"
-            f"<br>{etiqueta}: %{{customdata}}"
-            "<extra></extra>"
-        ),
-    )
-
-    figura.update_layout(
-        xaxis_title="Mes",
-        yaxis_title=etiqueta,
-        showlegend=False,
-    )
-
-    figura.update_xaxes(
-        tickangle=-35
-    )
-
-    if eje_clp:
-        aplicar_eje_clp(
-            figura,
-            dataframe[
-                valor_y
-            ],
-            "y",
-        )
-
-    st.plotly_chart(
-        formato_grafico(
-            figura,
-            440,
-        ),
-        use_container_width=True,
-    )
-
-
-def agregar_sello_agua(ruta):
-    if not os.path.exists(ruta):
-        return
-
-    with open(
-        ruta,
-        "rb",
-    ) as archivo:
-        sello = base64.b64encode(
-            archivo.read()
-        ).decode()
-
     st.markdown(
         (
-            "<style>"
-            ".stApp::before{"
-            'content:"";'
-            "position:fixed;"
-            "top:52%;"
-            "left:50%;"
-            "width:590px;"
-            "height:590px;"
-            f'background:url("data:image/png;base64,{sello}") '
-            "center/contain no-repeat;"
-            "opacity:.045;"
-            "transform:translate(-50%,-50%);"
-            "pointer-events:none;"
-            "z-index:0;"
-            "}"
-            ".block-container{"
-            "position:relative;"
-            "z-index:1;"
-            "}"
-            "</style>"
+            '<div class="titulo-login">'
+            '🔐 Acceso restringido'
+            '</div>'
+            '<div class="subtitulo-login">'
+            'Ingresa tu usuario y contrasena '
+            'para visualizar el panel.'
+            '</div>'
         ),
         unsafe_allow_html=True,
     )
 
-
-# =========================================================
-# CARGA Y TRANSFORMACIÓN DE DATOS
-# =========================================================
-
-@st.cache_data
-def cargar_datos(ruta_excel):
-    dataframe = pd.read_excel(
-        ruta_excel
-    )
-
-    dataframe = (
-        dataframe
-        .dropna(
-            how="all"
+    with st.form(
+        "formulario_acceso",
+        clear_on_submit=False,
+    ):
+        usuario = st.text_input(
+            "Usuario"
         )
-        .dropna(
-            axis=1,
-            how="all",
+
+        contrasena = st.text_input(
+            "Contrasena",
+            type="password",
         )
-    )
 
-    dataframe.columns = (
-        dataframe.columns
-        .astype(str)
-        .str.strip()
-    )
+        ingresar = st.form_submit_button(
+            "Ingresar",
+            use_container_width=True,
+        )
 
-    dataframe = dataframe.loc[
-        :,
-        ~dataframe.columns.str.contains(
-            "Unnamed",
-            case=False,
+    if ingresar:
+        valido, mensaje = validar_credenciales(
+            usuario,
+            contrasena,
+        )
+
+        if valido:
+            st.session_state[
+                "acceso_autorizado"
+            ] = True
+
+            st.rerun()
+
+        st.error(
+            mensaje
+        )
+
+    st.markdown(
+        (
+            '<div class="pie-login">'
+            '<div class="pie-login-titulo">'
+            'Panel desarrollado por Ricardo Grez'
+            '</div>'
+            '<div class="pie-login-subtitulo">'
+            'Administrador de Contrato | SAIVAM'
+            '</div>'
+            '<div class="pie-login-restringido">'
+            'Acceso restringido para usuarios autorizados'
+            '</div>'
+            '</div>'
         ),
-    ]
-
-    columna_fecha = buscar_columna(
-        dataframe.columns,
-        "Fecha",
+        unsafe_allow_html=True,
     )
 
-    if columna_fecha is None:
-        raise ValueError(
-            "No se encontró la columna Fecha."
-        )
-
-    dataframe = dataframe.rename(
-        columns={
-            columna_fecha: "Fecha"
-        }
-    )
-
-    dataframe[
-        "Fecha"
-    ] = dataframe[
-        "Fecha"
-    ].apply(
-        convertir_fecha
-    )
-
-    dataframe = dataframe[
-        dataframe[
-            "Fecha"
-        ].notna()
-    ].copy()
-
-    if dataframe.empty:
-        raise ValueError(
-            "No se detectaron fechas válidas "
-            "en la planilla."
-        )
-
-    dataframe[
-        "Año"
-    ] = dataframe[
-        "Fecha"
-    ].dt.year
-
-    dataframe[
-        "Mes"
-    ] = dataframe[
-        "Fecha"
-    ].dt.month
-
-    dataframe[
-        "Mes_Nombre"
-    ] = dataframe[
-        "Mes"
-    ].map(
-        MESES
-    )
-
-    dataframe[
-        "Periodo"
-    ] = dataframe[
-        "Fecha"
-    ].dt.strftime(
-            "%Y-%m"
-        )
-
-    dataframe[
-        "Periodo_Texto"
-    ] = (
-        dataframe[
-            "Mes_Nombre"
-        ]
-        + " "
-        + dataframe[
-            "Año"
-        ].astype(str)
-    )
-
-    return dataframe
+    st.stop()
 
 
-@st.cache_data
-def preparar_datos(dataframe):
-    columnas_base = [
-        "Fecha",
-        "Año",
-        "Mes",
-        "Mes_Nombre",
-        "Periodo",
-        "Periodo_Texto",
-    ]
+if "acceso_autorizado" not in st.session_state:
+    st.session_state[
+        "acceso_autorizado"
+    ] = False
 
-    registros_costos = []
-    registros_toneladas = []
+if not st.session_state[
+    "acceso_autorizado"
+]:
+    mostrar_login()
 
-    for residuo in RESIDUOS:
-
-        for tipo_costo in TIPOS_COSTO:
-            columna = buscar_columna(
-                dataframe.columns,
-                f"{tipo_costo} {residuo}",
-            )
-
-            if columna is None:
-                raise ValueError(
-                    "No se encontró la columna: "
-                    f"{tipo_costo} {residuo}"
-                )
-
-            temporal = dataframe[
-                columnas_base
-            ].copy()
-
-            temporal[
-                "Residuo"
-            ] = residuo
-
-            temporal[
-                "Tipo_Costo"
-            ] = tipo_costo
-
-            temporal[
-                "Monto"
-            ] = dataframe[
-                columna
-            ].apply(
-                limpiar_numero
-            )
-
-            registros_costos.append(
-                temporal
-            )
-
-        columna_toneladas = buscar_columna(
-            dataframe.columns,
-            f"Toneladas {residuo}",
-        )
-
-        if columna_toneladas is None:
-            raise ValueError(
-                "No se encontró la columna: "
-                f"Toneladas {residuo}"
-            )
-
-        temporal = dataframe[
-            columnas_base
-        ].copy()
-
-        temporal[
-            "Residuo"
-        ] = residuo
-
-        temporal[
-            "Toneladas"
-        ] = dataframe[
-            columna_toneladas
-        ].apply(
-            limpiar_numero
-        )
-
-        registros_toneladas.append(
-            temporal
-        )
-
-    costos = pd.concat(
-        registros_costos,
-        ignore_index=True,
-    )
-
-    toneladas_df = pd.concat(
-        registros_toneladas,
-        ignore_index=True,
-    )
-
-    return (
-        costos[
-            costos[
-                "Monto"
-            ] > 0
-        ].copy(),
-
-        toneladas_df[
-            toneladas_df[
-                "Toneladas"
-            ] > 0
-        ].copy(),
-    )
-
-
-# =========================================================
-# ESTILO GENERAL
-# =========================================================
 
 st.markdown(
-    """
+    f"""
     <style>
-        .stApp {
-            background: #0f172a;
-            color: #e5e7eb;
-        }
 
-        .titulo {
-            font-size: 40px;
-            font-weight: 850;
-            color: #f8fafc;
-        }
+    {css_sello()}
 
-        .subtitulo {
-            font-size: 17px;
-            color: #cbd5e1;
-            margin: 6px 0 10px;
-        }
+    html {{
+        color-scheme:
+            dark;
+    }}
 
-        .metadata {
-            color: #94a3b8;
-            font-size: 13px;
-            margin-bottom: 18px;
-        }
+    .stApp,
+    .main {{
+        background:
+            #0F172A;
+        color:
+            #E5E7EB;
+    }}
 
-        .seccion {
-            font-size: 23px;
-            font-weight: 800;
-            color: #f8fafc;
-            margin: 32px 0 15px;
-            border-left: 5px solid #22c55e;
-            padding-left: 11px;
-        }
+    header[data-testid="stHeader"],
+    div[data-testid="stToolbar"],
+    div[data-testid="stDecoration"],
+    footer,
+    section[data-testid="stSidebar"],
+    button[data-testid="stSidebarCollapsedControl"] {{
+        display:
+            none !important;
+    }}
 
-        .tarjeta {
-            background:
-                linear-gradient(
-                    135deg,
-                    #1e293b,
-                    #111827
-                );
+    .block-container {{
+        position:
+            relative;
+        z-index:
+            2;
+        max-width:
+            100% !important;
+        padding-top:
+            2.4rem;
+        padding-bottom:
+            1.5rem;
+    }}
 
-            border: 1px solid #334155;
-            border-radius: 15px;
-            padding: 17px 11px;
-            min-height: 112px;
-            text-align: center;
+    .titulo-principal {{
+        font-size:
+            42px;
+        font-weight:
+            800;
+        color:
+            #F8FAFC;
+        margin-bottom:
+            8px;
+        line-height:
+            1.15;
+    }}
 
-            box-shadow:
-                0 4px 14px
-                rgba(0, 0, 0, .18);
-        }
+    .subtitulo {{
+        font-size:
+            18px;
+        color:
+            #CBD5E1;
+        margin-bottom:
+            25px;
+        line-height:
+            1.4;
+    }}
 
-        .tarjeta-titulo {
-            font-size: 13px;
-            color: #cbd5e1;
-            font-weight: 700;
-            min-height: 20px;
-        }
+    .section-title {{
+        font-size:
+            25px;
+        font-weight:
+            800;
+        color:
+            #F8FAFC;
+        margin-top:
+            35px;
+        margin-bottom:
+            15px;
+        border-left:
+            6px solid
+            #F59E0B;
+        padding-left:
+            12px;
+    }}
 
-        .tarjeta-valor {
-            font-size: 24px;
-            font-weight: 900;
-            margin-top: 8px;
-        }
+    .card {{
+        background:
+            linear-gradient(
+                135deg,
+                #1E293B,
+                #111827
+            );
+        padding:
+            22px;
+        border-radius:
+            18px;
+        box-shadow:
+            0 4px 16px
+            rgba(
+                0,
+                0,
+                0,
+                0.45
+            );
+        text-align:
+            center;
+        border:
+            1px solid
+            #334155;
+        min-height:
+            118px;
+        display:
+            flex;
+        flex-direction:
+            column;
+        justify-content:
+            center;
+    }}
 
-        .tarjeta-subtitulo {
-            color: #94a3b8;
-            font-size: 12px;
-            margin-top: 7px;
-            line-height: 1.35;
-        }
+    .card-title {{
+        font-size:
+            15px;
+        color:
+            #CBD5E1;
+        font-weight:
+            600;
+        line-height:
+            1.25;
+    }}
 
-        .verde {
-            color: #22c55e;
-        }
+    .card-value {{
+        font-size:
+            31px;
+        color:
+            #F59E0B;
+        font-weight:
+            900;
+        margin-top:
+            8px;
+    }}
 
-        .azul {
-            color: #38bdf8;
-        }
+    div[data-testid="stDataFrame"] {{
+        background:
+            #1E293B;
+        border-radius:
+            12px;
+    }}
 
-        .naranjo {
-            color: #fb923c;
-        }
+    .stSelectbox label,
+    .stMultiSelect label,
+    .stDateInput label,
+    .stNumberInput label {{
+        color:
+            #E5E7EB !important;
+        font-weight:
+            700;
+    }}
 
-        .amarillo {
-            color: #fbbf24;
-        }
+    h1,
+    h2,
+    h3,
+    h4,
+    h5,
+    h6,
+    p,
+    label {{
+        color:
+            #E5E7EB;
+    }}
 
-        .nota,
-        .info,
-        .resumen {
-            background:
-                linear-gradient(
-                    135deg,
-                    #172033,
-                    #111827
-                );
+    div[data-baseweb="select"] > div {{
+        background:
+            #F8FAFC !important;
+        color:
+            #0F172A !important;
+        border-radius:
+            10px !important;
+        border:
+            1px solid
+            #CBD5E1 !important;
+    }}
 
-            border: 1px solid #334155;
-            border-radius: 13px;
-            padding: 16px 18px;
-            color: #e5e7eb;
-        }
+    div[data-baseweb="select"] span {{
+        color:
+            #0F172A !important;
+    }}
 
-        .info {
-            border-left: 5px solid #38bdf8;
-            margin-bottom: 12px;
-        }
+    input {{
+        background:
+            #F8FAFC !important;
+        color:
+            #0F172A !important;
+        border-radius:
+            8px !important;
+    }}
 
-        .resumen {
-            border-left: 5px solid #22c55e;
-            line-height: 1.65;
-        }
+    .logo-header {{
+        display:
+            flex;
+        justify-content:
+            flex-end;
+        align-items:
+            flex-start;
+        width:
+            100%;
+        padding-top:
+            5px;
+    }}
 
-        .nota {
-            border-left: 5px solid #fbbf24;
-            margin: 17px 0 15px;
-        }
+    .logo-header img {{
+        width:
+            190px;
+        max-width:
+            100%;
+        height:
+            auto;
+        background:
+            rgba(
+                255,
+                255,
+                255,
+                0.95
+            );
+        padding:
+            6px;
+        border-radius:
+            10px;
+        box-shadow:
+            0 4px 12px
+            rgba(
+                0,
+                0,
+                0,
+                0.35
+            );
+    }}
 
-        .nota-titulo {
-            color: #fbbf24;
-            font-size: 15px;
-            font-weight: 800;
-            margin-bottom: 6px;
-        }
+    .footer-panel {{
+        width:
+            100%;
+        margin-top:
+            65px;
+        padding:
+            24px 10px 12px;
+        border-top:
+            1px solid
+            rgba(
+                148,
+                163,
+                184,
+                0.28
+            );
+        text-align:
+            center;
+        color:
+            #94A3B8;
+        font-size:
+            14px;
+        line-height:
+            1.7;
+    }}
 
-        .nota-texto {
-            color: #cbd5e1;
-            font-size: 13px;
-            line-height: 1.55;
-        }
+    .footer-panel strong {{
+        color:
+            #E2E8F0;
+        font-size:
+            15px;
+    }}
 
-        .pie-pagina {
-            border-top: 1px solid #334155;
-            color: #94a3b8;
-            font-size: 12px;
-            line-height: 1.65;
-            margin-top: 38px;
-            padding: 18px 0 8px;
-            text-align: center;
-        }
+    @media (
+        max-width:
+            768px
+    ) {{
+        .titulo-principal {{
+            font-size:
+                31px;
+        }}
 
-        div[data-baseweb="select"] > div {
-            background: #ffffff !important;
-            color: #111827 !important;
-            border-radius: 8px !important;
-        }
+        .subtitulo {{
+            font-size:
+                15px;
+        }}
 
-        div[data-baseweb="select"] span,
-        div[data-baseweb="select"] input {
-            color: #111827 !important;
-        }
+        .logo-header img {{
+            width:
+                130px;
+        }}
+    }}
 
-        h1,
-        h2,
-        h3,
-        h4,
-        p,
-        label {
-            color: #e5e7eb;
-        }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-agregar_sello_agua(
-    SELLO_AGUA
+
+col_titulo, col_logo = st.columns(
+    [
+        5,
+        1.2,
+    ]
 )
 
-
-# =========================================================
-# APLICACIÓN
-# =========================================================
-
-try:
-    df = cargar_datos(
-        ARCHIVO_EXCEL
+with col_titulo:
+    st.markdown(
+        (
+            '<div class="titulo-principal">'
+            '⛽ Control de Consumo de Diesel SERFOCOL'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
     )
 
-    df_costos, df_toneladas = preparar_datos(
-        df
+    st.markdown(
+        (
+            '<div class="subtitulo">'
+            'Visualizacion consolidada para el '
+            'seguimiento operacional del consumo '
+            'de diesel por periodo, descripcion, '
+            'equipo y operador.'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
     )
 
-    fecha_minima = df[
-        "Fecha"
-    ].min()
-
-    fecha_maxima = df[
-        "Fecha"
-    ].max()
-
-
-    # =====================================================
-    # ENCABEZADO
-    # =====================================================
-
-    col_titulo, col_logo = st.columns(
-        [
-            5,
-            1,
-        ]
-    )
-
-    with col_titulo:
-        st.markdown(
-            """
-            <div class="titulo">
-                ♻️ Análisis consolidado de residuos no peligrosos
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-        st.markdown(
-            """
-            <div class="subtitulo">
-                Panel ejecutivo para el seguimiento operacional,
-                económico y contractual de RAD, corteza, escoria y ceniza.
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
+with col_logo:
+    if logo:
         st.markdown(
             (
-                '<div class="metadata">'
-                f"<b>Período analizado:</b> "
-                f"{nombre_periodo(fecha_minima)} a "
-                f"{nombre_periodo(fecha_maxima)}"
-                " &nbsp;|&nbsp; "
-                f"<b>Última actualización:</b> "
-                f"{nombre_periodo(fecha_maxima)}"
-                " &nbsp;|&nbsp; "
-                "<b>Fuente:</b> Control mensual de residuos no peligrosos"
-                "</div>"
+                '<div class="logo-header">'
+                f'<img src="{logo}" '
+                'alt="Logo superior">'
+                '</div>'
             ),
             unsafe_allow_html=True,
         )
 
-    with col_logo:
-        if os.path.exists(
-            LOGO_SUPERIOR
-        ):
-            st.image(
-                LOGO_SUPERIOR,
-                width=220,
+
+def titulo(
+    texto
+):
+    st.markdown(
+        (
+            '<div class="section-title">'
+            f'{texto}'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def tarjeta(
+    nombre,
+    valor,
+):
+    st.markdown(
+        (
+            '<div class="card">'
+            '<div class="card-title">'
+            f'{nombre}'
+            '</div>'
+            '<div class="card-value">'
+            f'{valor}'
+            '</div>'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+try:
+    df = pd.read_excel(
+        ARCHIVO_EXCEL,
+        header=8,
+        usecols="A:F",
+    )
+
+    df.columns = (
+        df.columns
+        .astype(
+            str
+        )
+        .str
+        .strip()
+    )
+
+    df = df.loc[
+        :,
+        ~df.columns.str.contains(
+            "Unnamed"
+        ),
+    ].dropna(
+        how="all"
+    )
+
+    for columna in [
+        "Fechas",
+        "Lts",
+    ]:
+        if columna not in df.columns:
+            st.error(
+                f"No se encontro la columna '{columna}'."
             )
 
+            st.write(
+                "Columnas detectadas:",
+                list(
+                    df.columns
+                ),
+            )
 
-    # =====================================================
-    # FILTROS
-    # =====================================================
+            st.stop()
 
-    seccion(
-        "🔎 Filtros de análisis"
+    df = df.dropna(
+        subset=[
+            "Fechas",
+            "Lts",
+        ],
+        how="all",
     )
 
-    filtro1, filtro2, filtro3, filtro4 = st.columns(
-        4
+    df[
+        "Lts"
+    ] = pd.to_numeric(
+        df[
+            "Lts"
+        ],
+        errors="coerce",
     )
 
-    with filtro1:
-        filtro_anios = st.multiselect(
+    df = df[
+        df[
+            "Lts"
+        ].notna()
+        & (
+            df[
+                "Lts"
+            ]
+            > 0
+        )
+    ]
+
+    df[
+        "Fechas"
+    ] = pd.to_datetime(
+        df[
+            "Fechas"
+        ],
+        errors="coerce",
+        dayfirst=True,
+    )
+
+    df = df[
+        df[
+            "Fechas"
+        ].notna()
+    ]
+
+    meses_espanol = {
+        1: "Enero",
+        2: "Febrero",
+        3: "Marzo",
+        4: "Abril",
+        5: "Mayo",
+        6: "Junio",
+        7: "Julio",
+        8: "Agosto",
+        9: "Septiembre",
+        10: "Octubre",
+        11: "Noviembre",
+        12: "Diciembre",
+    }
+
+    orden_meses = list(
+        meses_espanol.values()
+    )
+
+    df[
+        "Año"
+    ] = df[
+        "Fechas"
+    ].dt.year.astype(
+        int
+    )
+
+    df[
+        "Mes"
+    ] = df[
+        "Fechas"
+    ].dt.month
+
+    df[
+        "Mes_Nombre"
+    ] = df[
+        "Mes"
+    ].map(
+        meses_espanol
+    )
+
+    df[
+        "Periodo"
+    ] = df[
+        "Fechas"
+    ].dt.strftime(
+        "%Y-%m"
+    )
+
+    df[
+        "Fecha"
+    ] = df[
+        "Fechas"
+    ].dt.strftime(
+        "%d-%m-%Y"
+    )
+
+    titulo(
+        "🔎 Filtros de analisis"
+    )
+
+    df_filtrado = df.copy()
+
+    colf1, colf2, colf3 = st.columns(
+        3
+    )
+
+    with colf1:
+        años = st.multiselect(
             "Año",
             sorted(
                 df[
                     "Año"
                 ].unique()
             ),
+            placeholder="Seleccionar año",
         )
 
-    with filtro2:
-        filtro_residuos = st.multiselect(
-            "Residuo",
-            RESIDUOS,
-        )
-
-    with filtro3:
-        filtro_tipos = st.multiselect(
-            "Tipo de costo",
-            TIPOS_COSTO,
-        )
-
-    with filtro4:
-        filtro_meses = st.multiselect(
-            "Mes",
-            [
-                mes
-                for mes in MESES.values()
-                if mes
-                in df[
-                    "Mes_Nombre"
-                ].unique()
-            ],
-        )
-
-    costos = aplicar_filtros(
-        df_costos,
-        filtro_anios,
-        filtro_residuos,
-        filtro_meses,
-    )
-
-    ton = aplicar_filtros(
-        df_toneladas,
-        filtro_anios,
-        filtro_residuos,
-        filtro_meses,
-    )
-
-    if filtro_tipos:
-        costos = costos[
-            costos[
-                "Tipo_Costo"
-            ].isin(
-                filtro_tipos
-            )
-        ]
-
-    traslado = costos[
-        costos[
-            "Tipo_Costo"
-        ] == "Traslado"
-    ]
-
-    disposicion = costos[
-        costos[
-            "Tipo_Costo"
-        ] == "Disposición"
-    ]
-
-
-    # =====================================================
-    # INDICADORES
-    # =====================================================
-
-    periodos = (
-        set(
-            costos[
-                "Periodo"
-            ]
-        )
-        |
-        set(
-            ton[
-                "Periodo"
-            ]
-        )
-    )
-
-    cantidad_meses = len(
-        periodos
-    )
-
-    total_costos = float(
-        costos[
-            "Monto"
-        ].sum()
-    )
-
-    total_toneladas = float(
-        ton[
-            "Toneladas"
-        ].sum()
-    )
-
-    total_traslado = float(
-        traslado[
-            "Monto"
-        ].sum()
-    )
-
-    total_disposicion = float(
-        disposicion[
-            "Monto"
-        ].sum()
-    )
-
-    participacion_traslado = (
-        total_traslado
-        / total_costos
-        * 100
-        if total_costos
-        else 0
-    )
-
-    participacion_disposicion = (
-        total_disposicion
-        / total_costos
-        * 100
-        if total_costos
-        else 0
-    )
-
-    indicadores = [
-        (
-            "Costo total acumulado",
-            pesos(
-                total_costos
-            ),
-            "Disposición y traslado",
-            "verde",
-        ),
-
-        (
-            "Toneladas gestionadas",
-            toneladas(
-                total_toneladas
-            ),
-            "Total del período seleccionado",
-            "azul",
-        ),
-
-        (
-            "Costo total de traslado",
-            pesos(
-                total_traslado
-            ),
-            (
-                f"{porcentaje(participacion_traslado)} "
-                "del costo total"
-            ),
-            "naranjo",
-        ),
-
-        (
-            "Costo de disposición final",
-            pesos(
-                total_disposicion
-            ),
-            (
-                f"{porcentaje(participacion_disposicion)} "
-                "del costo total"
-            ),
-            "amarillo",
-        ),
-
-        (
-            "Promedio mensual de costos",
-            pesos(
-                total_costos
-                / cantidad_meses
-                if cantidad_meses
-                else 0
-            ),
-            f"{cantidad_meses} meses considerados",
-            "verde",
-        ),
-
-        (
-            "Promedio mensual de toneladas",
-            toneladas(
-                total_toneladas
-                / cantidad_meses
-                if cantidad_meses
-                else 0
-            ),
-            f"{cantidad_meses} meses considerados",
-            "azul",
-        ),
-
-        (
-            "Participación del traslado",
-            porcentaje(
-                participacion_traslado
-            ),
-            "Incidencia sobre el costo total",
-            "naranjo",
-        ),
-
-        (
-            "Participación de la disposición",
-            porcentaje(
-                participacion_disposicion
-            ),
-            "Incidencia sobre el costo total",
-            "amarillo",
-        ),
-    ]
-
-    seccion(
-        "📌 Indicadores ejecutivos"
-    )
-
-    for inicio in range(
-        0,
-        len(
-            indicadores
-        ),
-        4,
-    ):
-        columnas = st.columns(
-            4
-        )
-
-        for columna, datos in zip(
-            columnas,
-            indicadores[
-                inicio:inicio + 4
-            ],
-        ):
-            with columna:
-                tarjeta(
-                    *datos
+        if años:
+            df_filtrado = df_filtrado[
+                df_filtrado[
+                    "Año"
+                ].isin(
+                    años
                 )
+            ]
 
+    with colf2:
+        opciones_meses = [
+            mes
+            for mes in orden_meses
+            if mes in df[
+                "Mes_Nombre"
+            ].unique()
+        ]
 
-    # =====================================================
-    # RESUMEN EJECUTIVO
-    # =====================================================
+        meses = st.multiselect(
+            "Mes",
+            opciones_meses,
+            placeholder="Seleccionar mes",
+        )
 
-    seccion(
-        "📝 Resumen ejecutivo"
+        if meses:
+            df_filtrado = df_filtrado[
+                df_filtrado[
+                    "Mes_Nombre"
+                ].isin(
+                    meses
+                )
+            ]
+
+    with colf3:
+        if "Descripción" in df.columns:
+            opciones = sorted(
+                df[
+                    "Descripción"
+                ]
+                .dropna()
+                .astype(
+                    str
+                )
+                .unique()
+            )
+
+            descripciones = st.multiselect(
+                "Descripcion",
+                opciones,
+                placeholder="Seleccionar descripcion",
+            )
+
+            if descripciones:
+                df_filtrado = df_filtrado[
+                    df_filtrado[
+                        "Descripción"
+                    ]
+                    .astype(
+                        str
+                    )
+                    .isin(
+                        descripciones
+                    )
+                ]
+
+    titulo(
+        "📅 Filtro por rango de fechas"
     )
 
-    st.markdown(
-        (
-            '<div class="resumen">'
-            "<b>Lectura ejecutiva del período.</b> "
-            f"El costo acumulado de la gestión alcanza "
-            f"<b>{pesos(total_costos)}</b>, "
-            f"con una participación del traslado equivalente al "
-            f"<b>{porcentaje(participacion_traslado)}</b> "
-            f"y una incidencia de disposición final del "
-            f"<b>{porcentaje(participacion_disposicion)}</b>. "
-            f"Durante el período seleccionado se gestionaron "
-            f"<b>{toneladas(total_toneladas)}</b> de residuos "
-            f"no peligrosos."
-            "</div>"
+    rango = st.date_input(
+        "Selecciona rango de fechas",
+        value=(
+            df[
+                "Fechas"
+            ].min().date(),
+            df[
+                "Fechas"
+            ].max().date(),
         ),
-        unsafe_allow_html=True,
     )
 
-
-    # =====================================================
-    # NOTA OPERACIONAL
-    # =====================================================
-
-    mostrar_nota = (
-        "2026-05"
-        in df[
-            "Periodo"
-        ].values
-        and (
-            not filtro_anios
-            or 2026 in filtro_anios
-        )
-        and (
-            not filtro_meses
-            or "Mayo" in filtro_meses
-        )
-        and (
-            not filtro_residuos
-            or "Corteza" in filtro_residuos
-        )
-    )
-
-    if mostrar_nota:
-        st.markdown(
+    if (
+        isinstance(
+            rango,
             (
-                '<div class="nota">'
-                '<div class="nota-titulo">'
-                "📌 Antecedente operacional relevante — Corteza"
-                "</div>"
-                '<div class="nota-texto">'
-                "Durante mayo de 2026, la corteza fue gestionada "
-                "mediante disposición interna en planta. Este "
-                "antecedente debe considerarse al interpretar la "
-                "evolución mensual de los costos, debido a que la "
-                "modalidad aplicada durante dicho período difiere "
-                "del esquema habitual de disposición externa y puede "
-                "generar variaciones en el comportamiento económico observado."
-                "</div>"
-                "</div>"
+                list,
+                tuple,
             ),
-            unsafe_allow_html=True,
         )
-
-
-    # =====================================================
-    # TONELADAS ACUMULADAS
-    # =====================================================
-
-    seccion(
-        "⚖️ Toneladas acumuladas por residuo"
-    )
-
-    for columna, residuo in zip(
-        st.columns(
-            4
-        ),
-        RESIDUOS,
+        and len(
+            rango
+        )
+        == 2
     ):
-        with columna:
-            total_residuo = ton.loc[
-                ton[
-                    "Residuo"
-                ] == residuo,
-                "Toneladas",
-            ].sum()
+        inicio, fin = rango
 
-            tarjeta(
-                residuo,
-                toneladas(
-                    total_residuo
-                ),
-                "Toneladas gestionadas",
-                "azul",
+        df_filtrado = df_filtrado[
+            (
+                df_filtrado[
+                    "Fechas"
+                ].dt.date
+                >= inicio
             )
+            & (
+                df_filtrado[
+                    "Fechas"
+                ].dt.date
+                <= fin
+            )
+        ]
 
-
-    # =====================================================
-    # EVOLUCIÓN MENSUAL CONSOLIDADA
-    # =====================================================
-
-    seccion(
-        "📈 Evolución mensual consolidada"
+    titulo(
+        "📌 Indicadores principales"
     )
 
-    st.markdown(
-        (
-            '<div class="info">'
-            "Los gráficos permiten identificar tendencias, "
-            "variaciones operacionales y cambios en el comportamiento "
-            "económico del servicio."
-            "</div>"
-        ),
-        unsafe_allow_html=True,
+    total_litros = df_filtrado[
+        "Lts"
+    ].sum()
+
+    total_registros = len(
+        df_filtrado
     )
 
-    resumen_costos_mensual = (
-        costos
+    promedio_carga = (
+        df_filtrado[
+            "Lts"
+        ].mean()
+        if total_registros
+        else 0
+    )
+
+    consumo_por_mes = (
+        df_filtrado
         .groupby(
-            [
-                "Año",
-                "Mes",
-                "Periodo_Texto",
-            ],
-            as_index=False,
+            "Periodo"
         )[
-            "Monto"
+            "Lts"
         ]
         .sum()
-        .sort_values(
-            [
-                "Año",
-                "Mes",
-            ]
+    )
+
+    promedio_mensual = (
+        consumo_por_mes.mean()
+        if not consumo_por_mes.empty
+        else 0
+    )
+
+    c1, c2, c3, c4 = st.columns(
+        4
+    )
+
+    with c1:
+        tarjeta(
+            "Total litros consumidos",
+            f"{total_litros:,.0f} L",
         )
-    )
 
-    grafico_linea(
-        resumen_costos_mensual,
-        "Monto",
-        "Evolución mensual del costo total",
-        "Costo total",
-        pesos,
-        "#22c55e",
-        True,
-    )
-
-    resumen_ton_mensual = (
-        ton
-        .groupby(
-            [
-                "Año",
-                "Mes",
-                "Periodo_Texto",
-            ],
-            as_index=False,
-        )[
-            "Toneladas"
-        ]
-        .sum()
-        .sort_values(
-            [
-                "Año",
-                "Mes",
-            ]
+    with c2:
+        tarjeta(
+            "Cantidad de registros",
+            f"{total_registros}",
         )
-    )
 
-    grafico_linea(
-        resumen_ton_mensual,
-        "Toneladas",
-        "Evolución mensual de toneladas",
-        "Toneladas",
-        toneladas,
-        "#38bdf8",
-        False,
-    )
-
-
-    # =====================================================
-    # BARRAS APILADAS: COSTOS
-    # =====================================================
-
-    seccion(
-        "🚛 Composición mensual del costo"
-    )
-
-    costos_mensuales = (
-        costos
-        .groupby(
-            [
-                "Año",
-                "Mes",
-                "Periodo_Texto",
-                "Tipo_Costo",
-            ],
-            as_index=False,
-        )[
-            "Monto"
-        ]
-        .sum()
-        .sort_values(
-            [
-                "Año",
-                "Mes",
-            ]
+    with c3:
+        tarjeta(
+            "Promedio por carga",
+            f"{promedio_carga:,.1f} L",
         )
+
+    with c4:
+        tarjeta(
+            "Promedio mensual de consumo diesel",
+            f"{promedio_mensual:,.0f} L",
+        )
+
+    titulo(
+        "📊 Analisis grafico de consumos"
     )
 
-    figura_costos = go.Figure()
+    if df_filtrado.empty:
+        st.warning(
+            "No existen datos para mostrar "
+            "con los filtros seleccionados."
+        )
 
-    for tipo in TIPOS_COSTO:
-        temporal = costos_mensuales[
-            costos_mensuales[
-                "Tipo_Costo"
-            ] == tipo
-        ]
-
-        figura_costos.add_trace(
-            go.Bar(
-                x=temporal[
-                    "Periodo_Texto"
-                ],
-
-                y=temporal[
-                    "Monto"
-                ],
-
-                name=tipo,
-
-                marker_color=COLORES_COSTO[
-                    tipo
-                ],
-
-                customdata=temporal[
-                    "Monto"
-                ].apply(
-                    pesos
+    else:
+        grafico_layout = dict(
+            plot_bgcolor="#111827",
+            paper_bgcolor="#111827",
+            font=dict(
+                color="#F8FAFC",
+                size=15,
+            ),
+            title_font=dict(
+                size=24,
+                color="#FFFFFF",
+            ),
+            legend=dict(
+                font=dict(
+                    size=17,
+                    color="#FFFFFF",
                 ),
-
-                hovertemplate=(
-                    "<b>%{x}</b>"
-                    f"<br>{tipo}: %{{customdata}}"
-                    "<extra></extra>"
+                title=dict(
+                    font=dict(
+                        size=18,
+                        color="#F8FAFC",
+                    )
                 ),
+                bgcolor="rgba(15, 23, 42, 0.92)",
+                bordercolor="#64748B",
+                borderwidth=1,
+                x=1.02,
+                xanchor="left",
+                y=1,
+                yanchor="top",
+            ),
+            margin=dict(
+                l=60,
+                r=210,
+                t=80,
+                b=60,
+            ),
+        )
+
+        consumo_anual = (
+            df_filtrado
+            .groupby(
+                "Año"
+            )[
+                "Lts"
+            ]
+            .sum()
+            .reset_index()
+            .sort_values(
+                "Año"
             )
         )
 
-    total_mensual = (
-        costos_mensuales
-        .groupby(
-            [
-                "Año",
-                "Mes",
-                "Periodo_Texto",
-            ],
-            as_index=False,
-        )[
-            "Monto"
-        ]
-        .sum()
-        .sort_values(
-            [
-                "Año",
-                "Mes",
-            ]
+        fig_anual = px.bar(
+            consumo_anual,
+            x="Año",
+            y="Lts",
+            text="Lts",
+            title="Consumo anual de diesel",
+            color="Lts",
+            color_continuous_scale="Oranges",
+            template="plotly_dark",
         )
-    )
 
-    figura_costos.add_trace(
-        go.Scatter(
-            x=total_mensual[
-                "Periodo_Texto"
+        fig_anual.update_traces(
+            texttemplate="%{text:,.0f} L",
+            textposition="outside",
+        )
+
+        fig_anual.update_layout(
+            height=440,
+            xaxis_title="Año",
+            yaxis_title="Litros",
+            showlegend=False,
+            **grafico_layout,
+        )
+
+        fig_anual.update_xaxes(
+            tickmode="array",
+            tickvals=consumo_anual[
+                "Año"
+            ].tolist(),
+            ticktext=[
+                str(
+                    año
+                )
+                for año in consumo_anual[
+                    "Año"
+                ].tolist()
             ],
+        )
 
-            y=total_mensual[
-                "Monto"
-            ],
+        st.plotly_chart(
+            fig_anual,
+            use_container_width=True,
+            config={
+                "displayModeBar": False,
+            },
+        )
 
-            name="Costo total",
+        consumo_mensual = (
+            df_filtrado
+            .groupby(
+                [
+                    "Año",
+                    "Mes",
+                    "Mes_Nombre",
+                ]
+            )[
+                "Lts"
+            ]
+            .sum()
+            .reset_index()
+            .sort_values(
+                [
+                    "Año",
+                    "Mes",
+                ]
+            )
+        )
 
-            mode="lines+markers",
+        consumo_mensual[
+            "Mes_Año"
+        ] = (
+            consumo_mensual[
+                "Mes_Nombre"
+            ]
+            + " "
+            + consumo_mensual[
+                "Año"
+            ].astype(
+                str
+            )
+        )
 
+        fig_mensual = px.line(
+            consumo_mensual,
+            x="Mes_Año",
+            y="Lts",
+            markers=True,
+            title="Tendencia mensual de consumo",
+            template="plotly_dark",
+        )
+
+        fig_mensual.update_traces(
             line=dict(
-                color="#f8fafc",
-                width=2,
+                width=4,
+                color="#F59E0B",
             ),
-
             marker=dict(
-                size=4,
-                opacity=0.70,
+                size=10,
+                color="#F97316",
             ),
+        )
 
-            customdata=total_mensual[
-                "Monto"
-            ].apply(
-                pesos
+        fig_mensual.update_layout(
+            height=440,
+            xaxis_title="Mes",
+            yaxis_title="Litros",
+            **grafico_layout,
+        )
+
+        st.plotly_chart(
+            fig_mensual,
+            use_container_width=True,
+            config={
+                "displayModeBar": False,
+            },
+        )
+
+        titulo(
+            "🥧 Distribucion mensual del consumo"
+        )
+
+        distribucion = (
+            df_filtrado
+            .groupby(
+                [
+                    "Mes",
+                    "Mes_Nombre",
+                ]
+            )[
+                "Lts"
+            ]
+            .sum()
+            .reset_index()
+            .sort_values(
+                "Mes"
+            )
+        )
+
+        total_distribucion = (
+            distribucion[
+                "Lts"
+            ].sum()
+        )
+
+        distribucion[
+            "Porcentaje"
+        ] = (
+            distribucion[
+                "Lts"
+            ]
+            / total_distribucion
+            * 100
+        )
+
+        fig_torta = px.pie(
+            distribucion,
+            names="Mes_Nombre",
+            values="Lts",
+            title=(
+                "Participacion mensual "
+                "del consumo de diesel"
             ),
+            hole=0.55,
+            template="plotly_dark",
+            color_discrete_sequence=(
+                px.colors
+                .sequential
+                .Oranges_r
+            ),
+        )
 
+        fig_torta.update_traces(
+            textposition="inside",
+            textinfo="percent+label",
             hovertemplate=(
-                "<b>%{x}</b>"
-                "<br>Costo total: %{customdata}"
+                "<b>%{label}</b><br>"
+                "Litros consumidos: "
+                "%{value:,.0f} L<br>"
+                "Participacion: "
+                "%{percent}"
                 "<extra></extra>"
             ),
+            marker=dict(
+                line=dict(
+                    color="#0F172A",
+                    width=2,
+                )
+            ),
         )
-    )
 
-    figura_costos.update_layout(
-        barmode="stack",
-        title="Traslado y disposición final por mes",
-        xaxis_title="Mes",
-        yaxis_title="Costo (CLP)",
-    )
-
-    figura_costos.update_xaxes(
-        tickangle=-35
-    )
-
-    aplicar_eje_clp(
-        figura_costos,
-        total_mensual[
-            "Monto"
-        ],
-        "y",
-    )
-
-    st.plotly_chart(
-        formato_grafico(
-            figura_costos,
-            490,
-        ),
-        use_container_width=True,
-    )
-
-
-    # =====================================================
-    # BARRAS APILADAS: TONELADAS
-    # =====================================================
-
-    seccion(
-        "⚖️ Toneladas mensuales por residuo"
-    )
-
-    toneladas_mensuales = (
-        ton
-        .groupby(
-            [
-                "Año",
-                "Mes",
-                "Periodo_Texto",
-                "Residuo",
+        fig_torta.update_layout(
+            height=580,
+            **grafico_layout,
+            legend_title_text="Mes",
+            annotations=[
+                dict(
+                    text=(
+                        f"{total_distribucion:,.0f} L"
+                        "<br>Total"
+                    ),
+                    x=0.5,
+                    y=0.5,
+                    font_size=22,
+                    font_color="#F8FAFC",
+                    showarrow=False,
+                )
             ],
-            as_index=False,
-        )[
-            "Toneladas"
-        ]
-        .sum()
-        .sort_values(
-            [
-                "Año",
-                "Mes",
-            ]
         )
-    )
 
-    figura_toneladas = go.Figure()
+        st.plotly_chart(
+            fig_torta,
+            use_container_width=True,
+            config={
+                "displayModeBar": False,
+            },
+        )
 
-    for residuo in RESIDUOS:
-        temporal = toneladas_mensuales[
-            toneladas_mensuales[
-                "Residuo"
-            ] == residuo
-        ]
+        titulo(
+            "📋 Resumen mensual de participacion"
+        )
 
-        figura_toneladas.add_trace(
-            go.Bar(
-                x=temporal[
-                    "Periodo_Texto"
-                ],
+        tabla_mensual = distribucion.copy()
 
-                y=temporal[
-                    "Toneladas"
-                ],
-
-                name=residuo,
-
-                marker_color=COLORES_RESIDUOS[
-                    residuo
-                ],
-
-                customdata=temporal[
-                    "Toneladas"
-                ].apply(
-                    toneladas
-                ),
-
-                hovertemplate=(
-                    "<b>%{x}</b>"
-                    f"<br>{residuo}: %{{customdata}}"
-                    "<extra></extra>"
-                ),
+        tabla_mensual[
+            "Litros"
+        ] = (
+            tabla_mensual[
+                "Lts"
+            ]
+            .round()
+            .astype(
+                int
             )
         )
 
-    figura_toneladas.update_layout(
-        barmode="stack",
-        title="Composición mensual de toneladas gestionadas",
-        xaxis_title="Mes",
-        yaxis_title="Toneladas",
-    )
-
-    figura_toneladas.update_xaxes(
-        tickangle=-35
-    )
-
-    st.plotly_chart(
-        formato_grafico(
-            figura_toneladas,
-            490,
-        ),
-        use_container_width=True,
-    )
-
-
-    # =====================================================
-    # RANKING ACUMULADO
-    # =====================================================
-
-    seccion(
-        "🏆 Ranking acumulado por residuo"
-    )
-
-    ranking1, ranking2 = st.columns(
-        2
-    )
-
-    ranking_costos = (
-        costos
-        .groupby(
-            "Residuo",
-            as_index=False,
-        )[
-            "Monto"
-        ]
-        .sum()
-        .sort_values(
-            "Monto",
-            ascending=True,
+        tabla_mensual[
+            "Participacion"
+        ] = (
+            tabla_mensual[
+                "Porcentaje"
+            ]
+            .round(
+                1
+            )
+            .astype(
+                str
+            )
+            + "%"
         )
-    )
 
-    figura_ranking_costos = px.bar(
-        ranking_costos,
-        x="Monto",
-        y="Residuo",
-        orientation="h",
-        title="Costo acumulado por residuo",
-        template="plotly_dark",
-        color="Residuo",
-        color_discrete_map=COLORES_RESIDUOS,
-
-        text=ranking_costos[
-            "Monto"
-        ].apply(
-            pesos
-        ),
-    )
-
-    figura_ranking_costos.update_traces(
-        textposition="outside",
-        cliponaxis=False,
-
-        hovertemplate=(
-            "<b>%{y}</b>"
-            "<br>Costo acumulado: %{text}"
-            "<extra></extra>"
-        ),
-    )
-
-    figura_ranking_costos.update_layout(
-        showlegend=False,
-        xaxis_title="Costo acumulado (CLP)",
-        yaxis_title="Residuo",
-    )
-
-    aplicar_eje_clp(
-        figura_ranking_costos,
-        ranking_costos[
-            "Monto"
-        ],
-        "x",
-    )
-
-    with ranking1:
-        st.plotly_chart(
-            formato_grafico(
-                figura_ranking_costos,
-                400,
+        st.dataframe(
+            tabla_mensual[
+                [
+                    "Mes_Nombre",
+                    "Litros",
+                    "Participacion",
+                ]
+            ].rename(
+                columns={
+                    "Mes_Nombre": "Mes",
+                }
             ),
             use_container_width=True,
+            hide_index=True,
         )
 
-    ranking_toneladas = (
-        ton
-        .groupby(
-            "Residuo",
-            as_index=False,
-        )[
-            "Toneladas"
-        ]
-        .sum()
-        .sort_values(
-            "Toneladas",
-            ascending=True,
+        titulo(
+            "📆 Consumo mensual por año"
         )
-    )
 
-    figura_ranking_ton = px.bar(
-        ranking_toneladas,
-        x="Toneladas",
-        y="Residuo",
-        orientation="h",
-        title="Toneladas acumuladas por residuo",
-        template="plotly_dark",
-        color="Residuo",
-        color_discrete_map=COLORES_RESIDUOS,
+        consumo_barra = (
+            df_filtrado
+            .groupby(
+                [
+                    "Año",
+                    "Mes",
+                    "Mes_Nombre",
+                ]
+            )[
+                "Lts"
+            ]
+            .sum()
+            .reset_index()
+            .sort_values(
+                [
+                    "Año",
+                    "Mes",
+                ]
+            )
+        )
 
-        text=ranking_toneladas[
-            "Toneladas"
-        ].apply(
-            toneladas
-        ),
-    )
+        consumo_barra[
+            "Año_Texto"
+        ] = consumo_barra[
+            "Año"
+        ].astype(
+            str
+        )
 
-    figura_ranking_ton.update_traces(
-        textposition="outside",
-        cliponaxis=False,
+        fig_barra = px.bar(
+            consumo_barra,
+            x="Mes_Nombre",
+            y="Lts",
+            color="Año_Texto",
+            barmode="group",
+            text="Lts",
+            title=(
+                "Comparativo mensual por año"
+            ),
+            template="plotly_dark",
+            labels={
+                "Año_Texto": "Año",
+                "Mes_Nombre": "Mes",
+                "Lts": "Litros",
+            },
+        )
 
-        hovertemplate=(
-            "<b>%{y}</b>"
-            "<br>Toneladas acumuladas: %{text}"
-            "<extra></extra>"
-        ),
-    )
+        fig_barra.update_traces(
+            texttemplate="%{text:,.0f} L",
+            textposition="outside",
+        )
 
-    figura_ranking_ton.update_layout(
-        showlegend=False,
-        xaxis_title="Toneladas acumuladas",
-        yaxis_title="Residuo",
-    )
+        fig_barra.update_layout(
+            height=500,
+            xaxis_title="Mes",
+            yaxis_title="Litros",
+            **grafico_layout,
+            legend_title_text="Año",
+        )
 
-    with ranking2:
         st.plotly_chart(
-            formato_grafico(
-                figura_ranking_ton,
-                400,
-            ),
+            fig_barra,
             use_container_width=True,
+            config={
+                "displayModeBar": False,
+            },
         )
 
-
-    # =====================================================
-    # DISTRIBUCIÓN PORCENTUAL
-    # =====================================================
-
-    seccion(
-        "🥧 Distribución porcentual del servicio"
-    )
-
-    columna_pie_ton, columna_pie_costos = st.columns(
-        2
-    )
-
-
-    # -----------------------------------------------------
-    # GRÁFICO DE DONA: TONELADAS
-    # -----------------------------------------------------
-
-    resumen_pie_ton = (
-        ton
-        .groupby(
-            "Residuo",
-            as_index=False,
-        )[
-            "Toneladas"
-        ]
-        .sum()
-    )
-
-    resumen_pie_ton[
-        "Texto"
-    ] = resumen_pie_ton[
-        "Toneladas"
-    ].apply(
-        toneladas
-    )
-
-    figura_pie_ton = px.pie(
-        resumen_pie_ton,
-        names="Residuo",
-        values="Toneladas",
-        hole=0.56,
-        title="Participación de cada residuo sobre el tonelaje total",
-        template="plotly_dark",
-        color="Residuo",
-        color_discrete_map=COLORES_RESIDUOS,
-
-        custom_data=[
-            "Texto"
-        ],
-    )
-
-    figura_pie_ton.update_traces(
-        textposition="inside",
-        textinfo="percent+label",
-
-        hovertemplate=(
-            "<b>%{label}</b>"
-            "<br>Toneladas: %{customdata[0]}"
-            "<br>Participación: %{percent}"
-            "<extra></extra>"
-        ),
-    )
-
-    figura_pie_ton.update_layout(
-        legend_title_text="Residuo"
-    )
-
-    with columna_pie_ton:
-        st.plotly_chart(
-            formato_grafico(
-                figura_pie_ton,
-                470,
-            ),
-            use_container_width=True,
+        titulo(
+            "📅 Resumen de consumo"
         )
 
+        if "Equipo" in df_filtrado.columns:
+            resumen_equipo = (
+                df_filtrado
+                .pivot_table(
+                    index="Equipo",
+                    columns="Año",
+                    values="Lts",
+                    aggfunc="sum",
+                    fill_value=0,
+                )
+            )
 
-    # -----------------------------------------------------
-    # GRÁFICO DE DONA: COSTOS
-    # -----------------------------------------------------
+            st.dataframe(
+                resumen_equipo,
+                use_container_width=True,
+            )
 
-    resumen_pie_costos = (
-        costos
-        .groupby(
-            "Residuo",
-            as_index=False,
-        )[
-            "Monto"
-        ]
-        .sum()
+    titulo(
+        "📋 Registro general de diesel"
     )
 
-    resumen_pie_costos[
-        "Texto"
-    ] = resumen_pie_costos[
-        "Monto"
-    ].apply(
-        pesos
-    )
+    columnas = [
+        "Fecha",
+        "Descripción",
+        "Operador",
+        "Equipo",
+        "N° Salida Existencia",
+        "Lts",
+        "Año",
+        "Mes_Nombre",
+        "Periodo",
+    ]
 
-    figura_pie_costos = px.pie(
-        resumen_pie_costos,
-        names="Residuo",
-        values="Monto",
-        hole=0.56,
-        title="Participación de cada residuo en disposición y traslado",
-        template="plotly_dark",
-        color="Residuo",
-        color_discrete_map=COLORES_RESIDUOS,
-
-        custom_data=[
-            "Texto"
-        ],
-    )
-
-    figura_pie_costos.update_traces(
-        textposition="inside",
-        textinfo="percent+label",
-
-        hovertemplate=(
-            "<b>%{label}</b>"
-            "<br>Costo total: %{customdata[0]}"
-            "<br>Participación: %{percent}"
-            "<extra></extra>"
-        ),
-    )
-
-    figura_pie_costos.update_layout(
-        legend_title_text="Residuo"
-    )
-
-    with columna_pie_costos:
-        st.plotly_chart(
-            formato_grafico(
-                figura_pie_costos,
-                470,
-            ),
-            use_container_width=True,
-        )
-
-
-    # =====================================================
-    # TABLA CONSOLIDADA
-    # =====================================================
-
-    seccion(
-        "📋 Resumen consolidado por residuo"
-    )
-
-    tabla_costos = costos.pivot_table(
-        index="Residuo",
-        columns="Tipo_Costo",
-        values="Monto",
-        aggfunc="sum",
-        fill_value=0,
-    )
-
-    for columna in TIPOS_COSTO:
-        if columna not in tabla_costos:
-            tabla_costos[
-                columna
-            ] = 0
-
-    tabla_costos[
-        "Costo total"
-    ] = (
-        tabla_costos[
-            "Disposición"
-        ]
-        + tabla_costos[
-            "Traslado"
-        ]
-    )
-
-    tabla_toneladas = (
-        ton
-        .groupby(
-            "Residuo"
-        )[
-            "Toneladas"
-        ]
-        .sum()
-    )
-
-    tabla = (
-        pd.DataFrame(
-            index=RESIDUOS
-        )
-        .join(
-            tabla_costos
-        )
-        .join(
-            tabla_toneladas
-        )
-        .fillna(0)
-        .reset_index()
-        .rename(
-            columns={
-                "index": "Residuo"
-            }
-        )
-    )
-
-    tabla_mostrar = pd.DataFrame(
-        {
-            "Residuo": tabla[
-                "Residuo"
-            ],
-
-            "Costo total (CLP)": tabla[
-                "Costo total"
-            ].apply(
-                pesos
-            ),
-
-            "Costo de traslado (CLP)": tabla[
-                "Traslado"
-            ].apply(
-                pesos
-            ),
-
-            "Costo de disposición (CLP)": tabla[
-                "Disposición"
-            ].apply(
-                pesos
-            ),
-
-            "Toneladas gestionadas": tabla[
-                "Toneladas"
-            ].apply(
-                toneladas
-            ),
-        }
-    )
+    columnas = [
+        columna
+        for columna in columnas
+        if columna in df_filtrado.columns
+    ]
 
     st.dataframe(
-        tabla_mostrar,
+        df_filtrado[
+            columnas
+        ].copy(),
         use_container_width=True,
         hide_index=True,
     )
 
-
-    # =====================================================
-    # PIE DE PÁGINA
-    # =====================================================
-
-    st.markdown(
-        (
-            '<div class="pie-pagina">'
-            f"<b>Panel desarrollado por {AUTOR}</b><br>"
-            f"{CARGO} | SAIVAM<br>"
-            f"Versión {VERSION} | "
-            f"Última actualización: {nombre_periodo(fecha_maxima)}"
-            "</div>"
-        ),
-        unsafe_allow_html=True,
+    titulo(
+        "🚨 Alertas de control"
     )
 
+    limite = st.number_input(
+        "Definir limite de litros por carga",
+        min_value=0,
+        value=50,
+    )
+
+    alertas = df_filtrado[
+        df_filtrado[
+            "Lts"
+        ]
+        > limite
+    ]
+
+    if not alertas.empty:
+        st.warning(
+            "Existen cargas que superan "
+            "el limite definido."
+        )
+
+        st.dataframe(
+            alertas[
+                columnas
+            ].copy(),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+    else:
+        st.success(
+            "No existen cargas sobre "
+            "el limite definido."
+        )
 
 except FileNotFoundError:
     st.error(
-        "No se encontró la planilla Excel."
+        "No se encontro la planilla Excel."
     )
 
     st.write(
-        "Verifica que el archivo esté en la misma carpeta "
-        "que app.py y mantenga exactamente este nombre:"
+        "Verifica que el archivo este "
+        "en la misma carpeta que app.py."
     )
 
     st.code(
         ARCHIVO_EXCEL
     )
 
-
 except Exception as error:
     st.error(
-        "Ocurrió un error al cargar la planilla."
+        "Ocurrio un error al cargar la planilla."
     )
 
-    st.exception(
+    st.write(
         error
     )
+
+
+st.markdown(
+    (
+        '<div class="footer-panel">'
+        '<strong>'
+        'Panel desarrollado por Ricardo Grez'
+        '</strong><br>'
+        'Administrador de Contrato | SAIVAM'
+        '<br>'
+        'Version 1.0 | '
+        'Ultima actualizacion: Mayo 2026'
+        '</div>'
+    ),
+    unsafe_allow_html=True,
+)
