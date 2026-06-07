@@ -880,7 +880,7 @@ div[data-testid="stTextInput"] button:hover {
     z-index: 5;
 }
 
-/* Texto principal inferior aumentado */
+/* Texto principal inferior */
 .login-pie-titulo {
     color: #f8fafc;
     font-size: 16px;
@@ -1359,6 +1359,14 @@ def formato_grafico(
     figura,
     altura=460,
 ):
+    """
+    Formato general de los gráficos.
+
+    La sección legend mejora únicamente la visibilidad
+    de las letras ubicadas al lado derecho de los gráficos.
+    No modifica los cuadros de colores.
+    """
+
     figura.update_layout(
         height=altura,
         plot_bgcolor="#111827",
@@ -1372,6 +1380,21 @@ def formato_grafico(
         title_font=dict(
             size=20,
             color="#f8fafc",
+        ),
+
+        # Letras más visibles en las leyendas laterales
+        legend=dict(
+            font=dict(
+                color="#f8fafc",
+                size=15,
+            ),
+
+            title_font=dict(
+                color="#f8fafc",
+                size=14,
+            ),
+
+            bgcolor="rgba(0,0,0,0)",
         ),
 
         margin=dict(
