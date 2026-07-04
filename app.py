@@ -26,7 +26,6 @@ st.set_page_config(
 
 ARCHIVO_EXCEL = "RESIDUOS NO PELIGROSOS - V01.xlsx"
 LOGO_SUPERIOR = "logo1.png"
-SELLO_AGUA_BASE = "logoredondo"
 
 AUTOR = "Ricardo Grez"
 CARGO = "Administrador de Contrato"
@@ -104,11 +103,11 @@ def buscar_archivo_sello():
     """
 
     posibles = [
-        f"{SELLO_AGUA_BASE}.png",
-        f"{SELLO_AGUA_BASE}.jpg",
-        f"{SELLO_AGUA_BASE}.jpeg",
-        f"{SELLO_AGUA_BASE}.webp",
-        SELLO_AGUA_BASE,
+        "logoredondo.png",
+        "logoredondo.jpg",
+        "logoredondo.jpeg",
+        "logoredondo.webp",
+        "logoredondo",
     ]
 
     for archivo in posibles:
@@ -119,12 +118,20 @@ def buscar_archivo_sello():
 
 
 def obtener_tipo_imagen(ruta):
-    extension = os.path.splitext(ruta)[1].lower().replace(".", "")
+    extension = (
+        os.path.splitext(ruta)[1]
+        .lower()
+        .replace(".", "")
+    )
 
     if extension == "jpg":
         return "jpeg"
 
-    if extension in ["jpeg", "png", "webp"]:
+    if extension in [
+        "jpeg",
+        "png",
+        "webp",
+    ]:
         return extension
 
     return "png"
@@ -362,7 +369,7 @@ body,
     padding-top: 0.7rem !important;
     padding-bottom: 1rem !important;
     position: relative !important;
-    z-index: 1 !important;
+    z-index: 2 !important;
 }
 
 /* Encabezados */
@@ -398,8 +405,8 @@ body,
     background:
         linear-gradient(
             135deg,
-            #1e293b,
-            #111827
+            rgba(30, 41, 59, 0.94),
+            rgba(17, 24, 39, 0.94)
         );
 
     border: 1px solid #334155;
@@ -459,8 +466,8 @@ body,
     background:
         linear-gradient(
             135deg,
-            #172033,
-            #111827
+            rgba(23, 32, 51, 0.94),
+            rgba(17, 24, 39, 0.94)
         );
 
     border: 1px solid #334155;
@@ -510,10 +517,61 @@ label {
 
 
 # =========================================================
-# SELLO DE AGUA DEL PANEL PRINCIPAL
+# SELLO DE AGUA
 # =========================================================
 
 def agregar_sello_agua_panel():
+    ruta_sello = buscar_archivo_sello()
+
+    if not ruta_sello:
+        st.warning(
+            "No se encontró la imagen del sello de agua. "
+            "Verifica que el archivo se llame logoredondo.png y esté en la misma carpeta que app.py."
+        )
+        return
+
+    sello = archivo_a_base64(
+        ruta_sello
+    )
+
+    tipo_imagen = obtener_tipo_imagen(
+        ruta_sello
+    )
+
+    st.markdown(
+        (
+            "<style>"
+
+            ".marca-agua-panel {"
+            "position:fixed;"
+            "top:54%;"
+            "left:50%;"
+            "width:760px;"
+            "height:760px;"
+            "transform:translate(-50%,-50%);"
+            f"background-image:url('data:image/{tipo_imagen};base64,{sello}');"
+            "background-position:center;"
+            "background-repeat:no-repeat;"
+            "background-size:contain;"
+            "opacity:0.16;"
+            "pointer-events:none;"
+            "z-index:1;"
+            "}"
+
+            ".block-container {"
+            "position:relative !important;"
+            "z-index:2 !important;"
+            "}"
+
+            "</style>"
+
+            '<div class="marca-agua-panel"></div>'
+        ),
+        unsafe_allow_html=True,
+    )
+
+
+def agregar_sello_agua_login():
     ruta_sello = buscar_archivo_sello()
 
     if not ruta_sello:
@@ -531,22 +589,32 @@ def agregar_sello_agua_panel():
         (
             "<style>"
 
-            ".stApp::before {"
-            "content:'';"
+            ".login-sello-agua {"
             "position:fixed;"
-            "top:57%;"
+            "top:58%;"
             "left:50%;"
-            "width:820px;"
-            "height:820px;"
+            "width:760px;"
+            "height:760px;"
             "transform:translate(-50%,-50%);"
-            f"background:url('data:image/{tipo_imagen};base64,{sello}') "
-            "center/contain no-repeat;"
-            "opacity:.060;"
+            f"background-image:url('data:image/{tipo_imagen};base64,{sello}');"
+            "background-position:center;"
+            "background-repeat:no-repeat;"
+            "background-size:contain;"
+            "opacity:0.16;"
             "pointer-events:none;"
-            "z-index:0;"
+            "z-index:1;"
+            "}"
+
+            ".login-wrapper,"
+            "div[data-testid='stForm'],"
+            ".login-pie-fijo {"
+            "position:relative !important;"
+            "z-index:3 !important;"
             "}"
 
             "</style>"
+
+            '<div class="login-sello-agua"></div>'
         ),
         unsafe_allow_html=True,
     )
@@ -744,46 +812,6 @@ def construir_foto_acceso():
         f'src="data:image/{extension};base64,{imagen_base64}" '
         'alt="Foto de acceso">'
         "</div>"
-    )
-
-
-def agregar_sello_agua_login():
-    ruta_sello = buscar_archivo_sello()
-
-    if not ruta_sello:
-        return
-
-    sello = archivo_a_base64(
-        ruta_sello
-    )
-
-    tipo_imagen = obtener_tipo_imagen(
-        ruta_sello
-    )
-
-    st.markdown(
-        (
-            "<style>"
-
-            ".login-sello-agua {"
-            "position:fixed;"
-            "top:58%;"
-            "left:50%;"
-            "width:800px;"
-            "height:800px;"
-            "transform:translate(-50%,-50%);"
-            f"background:url('data:image/{tipo_imagen};base64,{sello}') "
-            "center/contain no-repeat;"
-            "opacity:.070;"
-            "pointer-events:none;"
-            "z-index:0;"
-            "}"
-
-            "</style>"
-
-            '<div class="login-sello-agua"></div>'
-        ),
-        unsafe_allow_html=True,
     )
 
 
@@ -1404,8 +1432,8 @@ def formato_grafico(
 ):
     figura.update_layout(
         height=altura,
-        plot_bgcolor="#111827",
-        paper_bgcolor="#111827",
+        plot_bgcolor="rgba(17, 24, 39, 0.92)",
+        paper_bgcolor="rgba(17, 24, 39, 0.92)",
 
         font=dict(
             color="#e5e7eb",
