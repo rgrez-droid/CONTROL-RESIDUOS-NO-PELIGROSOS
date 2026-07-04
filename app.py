@@ -600,7 +600,7 @@ def agregar_sello_agua_login():
             "background-position:center;"
             "background-repeat:no-repeat;"
             "background-size:contain;"
-            "opacity:0.16;"
+            "opacity:0.08;"
             "pointer-events:none;"
             "z-index:1;"
             "}"
