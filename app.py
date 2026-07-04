@@ -26,7 +26,7 @@ st.set_page_config(
 
 ARCHIVO_EXCEL = "RESIDUOS NO PELIGROSOS - V01.xlsx"
 LOGO_SUPERIOR = "logo1.png"
-SELLO_AGUA = "logoredondo.png"
+SELLO_AGUA_BASE = "logoredondo"
 
 AUTOR = "Ricardo Grez"
 CARGO = "Administrador de Contrato"
@@ -91,6 +91,45 @@ def archivo_a_base64(ruta):
         ).decode("utf-8")
 
 
+def buscar_archivo_sello():
+    """
+    Busca el sello de agua con nombre logoredondo.
+
+    Archivos válidos:
+        logoredondo.png
+        logoredondo.jpg
+        logoredondo.jpeg
+        logoredondo.webp
+        logoredondo
+    """
+
+    posibles = [
+        f"{SELLO_AGUA_BASE}.png",
+        f"{SELLO_AGUA_BASE}.jpg",
+        f"{SELLO_AGUA_BASE}.jpeg",
+        f"{SELLO_AGUA_BASE}.webp",
+        SELLO_AGUA_BASE,
+    ]
+
+    for archivo in posibles:
+        if os.path.exists(archivo):
+            return archivo
+
+    return None
+
+
+def obtener_tipo_imagen(ruta):
+    extension = os.path.splitext(ruta)[1].lower().replace(".", "")
+
+    if extension == "jpg":
+        return "jpeg"
+
+    if extension in ["jpeg", "png", "webp"]:
+        return extension
+
+    return "png"
+
+
 def buscar_selfie():
     """
     Busca automáticamente una imagen cuyo nombre comience por selfie.
@@ -98,7 +137,8 @@ def buscar_selfie():
     Ejemplos válidos:
         selfie.png
         selfie.jpg
-        selfie_ricardo.png
+        selfie.jpeg
+        selfie.webp
     """
 
     for extension in (
@@ -474,13 +514,17 @@ label {
 # =========================================================
 
 def agregar_sello_agua_panel():
-    if not os.path.exists(
-        SELLO_AGUA
-    ):
+    ruta_sello = buscar_archivo_sello()
+
+    if not ruta_sello:
         return
 
     sello = archivo_a_base64(
-        SELLO_AGUA
+        ruta_sello
+    )
+
+    tipo_imagen = obtener_tipo_imagen(
+        ruta_sello
     )
 
     st.markdown(
@@ -495,9 +539,9 @@ def agregar_sello_agua_panel():
             "width:820px;"
             "height:820px;"
             "transform:translate(-50%,-50%);"
-            f"background:url('data:image/png;base64,{sello}') "
+            f"background:url('data:image/{tipo_imagen};base64,{sello}') "
             "center/contain no-repeat;"
-            "opacity:.055;"
+            "opacity:.060;"
             "pointer-events:none;"
             "z-index:0;"
             "}"
@@ -704,18 +748,17 @@ def construir_foto_acceso():
 
 
 def agregar_sello_agua_login():
-    """
-    Agrega el mismo sello de agua del panel principal
-    a la pantalla de ingreso.
-    """
+    ruta_sello = buscar_archivo_sello()
 
-    if not os.path.exists(
-        SELLO_AGUA
-    ):
+    if not ruta_sello:
         return
 
     sello = archivo_a_base64(
-        SELLO_AGUA
+        ruta_sello
+    )
+
+    tipo_imagen = obtener_tipo_imagen(
+        ruta_sello
     )
 
     st.markdown(
@@ -729,9 +772,9 @@ def agregar_sello_agua_login():
             "width:800px;"
             "height:800px;"
             "transform:translate(-50%,-50%);"
-            f"background:url('data:image/png;base64,{sello}') "
+            f"background:url('data:image/{tipo_imagen};base64,{sello}') "
             "center/contain no-repeat;"
-            "opacity:.065;"
+            "opacity:.070;"
             "pointer-events:none;"
             "z-index:0;"
             "}"
@@ -1359,14 +1402,6 @@ def formato_grafico(
     figura,
     altura=460,
 ):
-    """
-    Formato general de los gráficos.
-
-    La sección legend mejora únicamente la visibilidad
-    de las letras ubicadas al lado derecho de los gráficos.
-    No modifica los cuadros de colores.
-    """
-
     figura.update_layout(
         height=altura,
         plot_bgcolor="#111827",
@@ -1382,7 +1417,6 @@ def formato_grafico(
             color="#f8fafc",
         ),
 
-        # Letras más visibles en las leyendas laterales
         legend=dict(
             font=dict(
                 color="#f8fafc",
@@ -2122,106 +2156,6 @@ def mostrar_panel():
             ),
             use_container_width=True,
         )
-
-    # -----------------------------------------------------
-    # TABLA CONSOLIDADA
-    # -----------------------------------------------------
-
-    seccion(
-        "📋 Resumen consolidado por residuo"
-    )
-
-    tabla_costos = costos.pivot_table(
-        index="Residuo",
-        columns="Tipo_Costo",
-        values="Monto",
-        aggfunc="sum",
-        fill_value=0,
-    )
-
-    for columna in TIPOS_COSTO:
-
-        if columna not in tabla_costos:
-
-            tabla_costos[
-                columna
-            ] = 0
-
-    tabla_costos[
-        "Costo total"
-    ] = (
-        tabla_costos[
-            "Disposición"
-        ]
-        + tabla_costos[
-            "Traslado"
-        ]
-    )
-
-    tabla = (
-        pd.DataFrame(
-            index=RESIDUOS
-        )
-        .join(
-            tabla_costos
-        )
-        .join(
-            ton
-            .groupby(
-                "Residuo"
-            )[
-                "Toneladas"
-            ]
-            .sum()
-        )
-        .fillna(
-            0
-        )
-        .reset_index()
-        .rename(
-            columns={
-                "index": "Residuo"
-            }
-        )
-    )
-
-    tabla_mostrar = pd.DataFrame(
-        {
-            "Residuo": tabla[
-                "Residuo"
-            ],
-
-            "Costo total (CLP)": tabla[
-                "Costo total"
-            ].apply(
-                pesos
-            ),
-
-            "Costo de traslado (CLP)": tabla[
-                "Traslado"
-            ].apply(
-                pesos
-            ),
-
-            "Costo de disposición (CLP)": tabla[
-                "Disposición"
-            ].apply(
-                pesos
-            ),
-
-            "Toneladas gestionadas": tabla[
-                "Toneladas"
-            ].apply(
-                toneladas
-            ),
-        }
-    )
-
-    st.dataframe(
-        tabla_mostrar,
-        use_container_width=True,
-        hide_index=True,
-    )
 
     # -----------------------------------------------------
     # PIE DE PAGINA DEL PANEL
