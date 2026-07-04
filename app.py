@@ -91,17 +91,6 @@ def archivo_a_base64(ruta):
 
 
 def buscar_archivo_sello():
-    """
-    Busca el sello de agua con nombre logoredondo.
-
-    Archivos válidos:
-        logoredondo.png
-        logoredondo.jpg
-        logoredondo.jpeg
-        logoredondo.webp
-        logoredondo
-    """
-
     posibles = [
         "logoredondo.png",
         "logoredondo.jpg",
@@ -138,16 +127,6 @@ def obtener_tipo_imagen(ruta):
 
 
 def buscar_selfie():
-    """
-    Busca automáticamente una imagen cuyo nombre comience por selfie.
-
-    Ejemplos válidos:
-        selfie.png
-        selfie.jpg
-        selfie.jpeg
-        selfie.webp
-    """
-
     for extension in (
         "png",
         "jpg",
@@ -1473,6 +1452,8 @@ def formato_grafico(
     )
 
     figura.update_xaxes(
+        title_text="",
+
         tickfont=dict(
             color="#cbd5e1",
             size=11,
