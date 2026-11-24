@@ -1,12 +1,12 @@
 import base64
 import glob
 import hashlib
-import hmac
-import importlib
 import os
 import re
 import unicodedata
-from collections.abc import Mapping
+from html import escape
+from html.parser import HTMLParser
+from urllib.request import Request, urlopen
 
 import pandas as pd
 import plotly.express as px
@@ -18,30 +18,32 @@ import streamlit as st
 # =========================================================
 
 st.set_page_config(
-    page_title="Analisis de Residuos No Peligrosos",
-    page_icon="♻️",
+    page_title="Estados de Pago | Contrato Mulchén",
+    page_icon="📊",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-ARCHIVO_EXCEL = "RESIDUOS NO PELIGROSOS - V01.xlsx"
-LOGO_SUPERIOR = "logo1.png"
+NOMBRE_BASE_EXCEL = "RESUMEN ESTADOS DE PAGO"
+
+CARPETA_DRIVE_ESTADOS_PAGO_ID = "1tgoJgN3351zTNdVJOyK3F9CYh2LueInf"
+CARPETA_DRIVE_ESTADOS_PAGO_URL = (
+    "https://drive.google.com/drive/folders/"
+    + CARPETA_DRIVE_ESTADOS_PAGO_ID
+)
+
+LOGO_SUPERIOR_BASE = "logo1"
+SELLO_AGUA_BASE = "camion"
+SELFIE_BASE = "selfie"
 
 AUTOR = "Ricardo Grez"
-CARGO = "Administrador de Contrato"
-VERSION = "1.0"
+CARGO = "Contract Manager"
+EMPRESA = "SAIVAM"
+VERSION = "1.2"
 
-RESIDUOS = [
-    "RAD",
-    "Corteza",
-    "Escoria",
-    "Ceniza",
-]
-
-TIPOS_COSTO = [
-    "Disposición",
-    "Traslado",
-]
+CONTRATO = "CW2307646"
+NOMBRE_CONTRATO = "Aseo Industrial y Gestión de Residuos"
+CENTRO_OPERACIONAL = "CMPC Maderas | Planta Mulchén"
 
 MESES = {
     1: "Enero",
@@ -59,25 +61,57 @@ MESES = {
 }
 
 MESES_NUMERO = {
-    nombre.lower(): numero
-    for numero, nombre in MESES.items()
+    "enero": 1,
+    "febrero": 2,
+    "marzo": 3,
+    "abril": 4,
+    "mayo": 5,
+    "junio": 6,
+    "julio": 7,
+    "agosto": 8,
+    "septiembre": 9,
+    "setiembre": 9,
+    "octubre": 10,
+    "noviembre": 11,
+    "diciembre": 12,
 }
+
+COLUMNAS_DETALLE_ADICIONALES = [
+    "Reembolso",
+    "Insumos_arriendo_herramientas",
+    "Horas_extras",
+    "Bonificaciones",
+    "Cot_adicionales",
+]
+
+COLUMNAS_MONTO = [
+    "Servicio_fijo",
+    "Transporte_residuos",
+    "Adicionales",
+    *COLUMNAS_DETALLE_ADICIONALES,
+    "Total_neto",
+    "IVA_19",
+    "Total_bruto",
+]
+
+COLUMNAS_TONELADAS = [
+    "Ton_RAD",
+    "Ton_Corteza_G3",
+    "Ton_Escoria",
+    "Ton_Cenizas",
+    "Ton_Total",
+]
 
 COLORES_RESIDUOS = {
-    "RAD": "#a855f7",
-    "Corteza": "#ff5b3d",
-    "Escoria": "#14d9b2",
-    "Ceniza": "#6574ff",
-}
-
-COLORES_COSTO = {
-    "Traslado": "#ff5b3d",
-    "Disposición": "#6574ff",
+    "RAD": "#9333ea",
+    "Corteza G3": "#ea580c",
+    "Escoria": "#059669",
+    "Cenizas": "#2563eb",
 }
 
 
 # =========================================================
-# UTILIDADES
+# UTILIDADES GENERALES
 # =========================================================
 
 def archivo_a_base64(ruta):
@@ -90,59 +124,116 @@ def archivo_a_base64(ruta):
         ).decode("utf-8")
 
 
-def buscar_archivo_sello():
-    posibles = [
-        "logoredondo.png",
-        "logoredondo.jpg",
-        "logoredondo.jpeg",
-        "logoredondo.webp",
-        "logoredondo",
-    ]
+def obtener_tipo_mime(ruta):
+    extension = os.path.splitext(str(ruta))[1].lower().replace(".", "")
 
-    for archivo in posibles:
-        if os.path.exists(archivo):
-            return archivo
+    tipos = {
+        "png": "image/png",
+        "jpg": "image/jpeg",
+        "jpeg": "image/jpeg",
+        "webp": "image/webp",
+    }
 
-    return None
+    return tipos.get(extension, "image/png")
 
 
-def obtener_tipo_imagen(ruta):
-    extension = (
-        os.path.splitext(ruta)[1]
-        .lower()
-        .replace(".", "")
-    )
-
-    if extension == "jpg":
-        return "jpeg"
-
-    if extension in [
-        "jpeg",
-        "png",
-        "webp",
-    ]:
-        return extension
-
-    return "png"
-
-
-def buscar_selfie():
-    for extension in (
+def buscar_imagen_por_nombre(nombre_base):
+    extensiones = [
         "png",
         "jpg",
         "jpeg",
         "webp",
-    ):
-        archivos = sorted(
-            glob.glob(
-                f"selfie*.{extension}"
-            )
-        )
+    ]
 
-        if archivos:
-            return archivos[0]
+    nombre_base_normalizado = normalizar(nombre_base)
+
+    candidatos = []
+
+    for carpeta in ["."]:
+        for extension in extensiones:
+            candidatos.extend(glob.glob(os.path.join(carpeta, f"{nombre_base}.{extension}")))
+            candidatos.extend(glob.glob(os.path.join(carpeta, f"**/*{nombre_base}*.{extension}"), recursive=True))
+
+    for archivo in glob.glob("**/*", recursive=True):
+        if os.path.isfile(archivo):
+            extension = os.path.splitext(archivo)[1].lower().replace(".", "")
+
+            if extension in extensiones:
+                nombre_archivo = normalizar(os.path.splitext(os.path.basename(archivo))[0])
+
+                if nombre_base_normalizado in nombre_archivo:
+                    candidatos.append(archivo)
+
+    candidatos_unicos = sorted(set(candidatos))
+
+    if candidatos_unicos:
+        return candidatos_unicos[0]
 
     return None
+
+
+def buscar_archivo_excel():
+    """Selecciona la planilla con el último período realmente disponible."""
+    extensiones = ("xlsx", "xlsm", "xls")
+    carpetas = {os.path.dirname(os.path.abspath(__file__)), os.getcwd()}
+    candidatos = set()
+
+    for carpeta in carpetas:
+        for extension in extensiones:
+            patron = os.path.join(carpeta, f"*{NOMBRE_BASE_EXCEL}*.{extension}")
+            candidatos.update(os.path.abspath(ruta) for ruta in glob.glob(patron))
+
+    candidatos = sorted(
+        ruta for ruta in candidatos
+        if os.path.isfile(ruta)
+        and not os.path.basename(ruta).startswith("~$")
+    )
+
+    if not candidatos:
+        return None
+
+    archivos_validos = []
+    errores = []
+
+    for ruta in candidatos:
+        try:
+            # La firma cambia cuando se modifica el contenido del Excel.
+            with open(ruta, "rb") as archivo:
+                firma = hashlib.sha256(archivo.read()).hexdigest()
+
+            datos_excel = cargar_datos(ruta, firma)
+            fecha_maxima = datos_excel["Fecha"].max()
+
+            if pd.isna(fecha_maxima):
+                raise ValueError("No contiene períodos válidos.")
+
+            nombre_exacto = int(
+                os.path.basename(ruta) in {
+                    f"{NOMBRE_BASE_EXCEL}.{extension}"
+                    for extension in extensiones
+                }
+            )
+
+            # Primero el último mes de datos; después la modificación
+            # del archivo y el nombre exacto como criterios de desempate.
+            puntaje = (
+                fecha_maxima,
+                os.path.getmtime(ruta),
+                nombre_exacto,
+                datos_excel["Fecha"].nunique(),
+            )
+            archivos_validos.append((puntaje, ruta))
+
+        except Exception as error:
+            errores.append(f"{os.path.basename(ruta)}: {error}")
+
+    if not archivos_validos:
+        raise ValueError(
+            "No se pudo cargar ninguna planilla de estados de pago. "
+            + " | ".join(errores)
+        )
+
+    return max(archivos_validos, key=lambda elemento: elemento[0])[1]
 
 
 def normalizar(texto):
@@ -156,6 +247,8 @@ def normalizar(texto):
         for caracter in texto
         if unicodedata.category(caracter) != "Mn"
     )
+
+    texto = texto.replace("_", " ")
 
     return re.sub(
         r"\s+",
@@ -175,108 +268,102 @@ def buscar_columna(columnas, nombre):
     )
 
 
+def buscar_columna_por_fragmento(columnas, fragmentos):
+    """Busca encabezados aunque contengan texto adicional o abreviaciones."""
+    fragmentos_normalizados = [
+        normalizar(fragmento)
+        for fragmento in fragmentos
+    ]
+
+    for columna in columnas:
+        columna_normalizada = normalizar(columna)
+
+        if any(
+            fragmento in columna_normalizada
+            for fragmento in fragmentos_normalizados
+        ):
+            return columna
+
+    return None
+
+
 def limpiar_numero(valor):
-    if pd.isna(valor):
+    if valor is None:
         return 0.0
 
-    if isinstance(
-        valor,
-        (
-            int,
-            float,
-        ),
-    ):
+    # Esta validación evita el error:
+    # "The truth value of a Series is ambiguous".
+    if isinstance(valor, (pd.Series, pd.DataFrame)):
+        raise TypeError(
+            "Se recibió una Serie/DataFrame en limpiar_numero. "
+            "Revisa encabezados duplicados en la planilla."
+        )
+
+    try:
+        if pd.isna(valor):
+            return 0.0
+    except (TypeError, ValueError):
+        pass
+
+    if isinstance(valor, (int, float)):
         return float(valor)
+
+    texto = str(valor).strip().lower()
+
+    texto = texto.replace("$", "")
+    texto = texto.replace("clp", "")
+    texto = texto.replace("toneladas", "")
+    texto = texto.replace("tonelada", "")
+    texto = texto.replace("tons", "")
+    texto = texto.replace("ton", "")
+    texto = texto.replace(" ", "")
 
     texto = re.sub(
         r"[^0-9,.-]",
         "",
-        str(valor),
+        texto,
     )
 
-    if texto in {
-        "",
-        "-",
-    }:
+    if texto in ["", "-", ".", ","]:
         return 0.0
 
+    # Formato chileno: 1.234.567,89
     if "," in texto:
-        texto = (
-            texto
-            .replace(".", "")
-            .replace(",", ".")
-        )
+        texto = texto.replace(".", "")
+        texto = texto.replace(",", ".")
 
-    elif (
-        "." in texto
-        and len(
-            texto.split(".")[-1]
-        ) == 3
-    ):
-        texto = texto.replace(
-            ".",
-            "",
-        )
+    # Formato de miles sin decimales: 1.234.567
+    elif texto.count(".") >= 1:
+        partes = texto.split(".")
+
+        if all(len(parte) == 3 for parte in partes[1:]):
+            texto = "".join(partes)
 
     try:
         return float(texto)
 
-    except ValueError:
+    except (TypeError, ValueError):
         return 0.0
 
 
-def convertir_fecha(valor):
-    if pd.isna(valor):
-        return pd.NaT
-
-    if isinstance(
-        valor,
-        pd.Timestamp,
-    ):
-        return valor
-
-    texto = normalizar(valor)
-
-    coincidencia = re.match(
-        (
-            r"^(enero|febrero|marzo|abril|mayo|junio|julio|"
-            r"agosto|septiembre|octubre|noviembre|diciembre)"
-            r"\s+(\d{4})$"
-        ),
-        texto,
-    )
-
-    if coincidencia:
-        return pd.Timestamp(
-            year=int(
-                coincidencia.group(2)
-            ),
-            month=MESES_NUMERO[
-                coincidencia.group(1)
-            ],
-            day=1,
-        )
-
-    return pd.to_datetime(
-        valor,
-        errors="coerce",
-        dayfirst=True,
-    )
-
-
-def pesos(valor):
+def formato_monto(valor):
     try:
-        return (
-            "$ "
-            + f"{int(round(float(valor))):,}"
-            .replace(",", ".")
-        )
+        return f"{int(round(float(valor))):,}".replace(",", ".")
 
-    except (
-        TypeError,
-        ValueError,
-    ):
-        return "$ 0"
+    except (TypeError, ValueError):
+        return "0"
+
+
+def pesos_html(valor):
+    return (
+        f'<span class="monto-clp">'
+        f'<span class="simbolo-peso">$</span>&nbsp;{formato_monto(valor)}'
+        f'</span>'
+    )
+
+
+def pesos_texto(valor):
+    return f"$ {formato_monto(valor)}"
 
 
 def toneladas(valor):
@@ -289,36 +376,58 @@ def toneladas(valor):
             + " t"
         )
 
-    except (
-        TypeError,
-        ValueError,
-    ):
+    except (TypeError, ValueError):
         return "0,0 t"
 
 
 def porcentaje(valor):
     try:
-        return (
-            f"{float(valor):.1f}%"
-            .replace(".", ",")
-        )
+        return f"{float(valor):.1f}%".replace(".", ",")
 
-    except (
-        TypeError,
-        ValueError,
-    ):
+    except (TypeError, ValueError):
         return "0,0%"
 
 
-def nombre_periodo(fecha):
-    return (
-        f"{MESES[fecha.month]} "
-        f"{fecha.year}"
+def convertir_fecha_desde_mes_periodo(mes, periodo):
+    mes_texto = normalizar(mes)
+    mes_numero = MESES_NUMERO.get(mes_texto)
+
+    if not mes_numero:
+        return pd.NaT
+
+    coincidencia_anio = re.search(
+        r"(\d{4})",
+        str(periodo),
+    )
+
+    if not coincidencia_anio:
+        return pd.NaT
+
+    anio = int(coincidencia_anio.group(1))
+
+    return pd.Timestamp(
+        year=anio,
+        month=mes_numero,
+        day=1,
     )
 
 
+def nombre_periodo(fecha):
+    if pd.isna(fecha):
+        return ""
+
+    return f"{MESES[fecha.month]} {fecha.year}"
+
+
+def reiniciar_app():
+    try:
+        st.rerun()
+    except Exception:
+        st.experimental_rerun()
+
+
 # =========================================================
-# ESTILO GENERAL
+# ESTILO GENERAL CLARO
 # =========================================================
 
 def aplicar_estilo_general():
@@ -326,7 +435,6 @@ def aplicar_estilo_general():
         """
 <style>
 
-/* Ocultar elementos nativos de Streamlit */
 [data-testid="stSidebar"],
 [data-testid="collapsedControl"],
 header[data-testid="stHeader"],
@@ -335,132 +443,357 @@ footer {
     display: none !important;
 }
 
-/* Fondo general */
 html,
 body,
 [data-testid="stAppViewContainer"],
 .stApp {
-    background: #0f172a !important;
-    color: #e5e7eb !important;
+    background: #f4f7fb !important;
+    color: #0f172a !important;
 }
 
 .block-container {
     padding-top: 0.7rem !important;
     padding-bottom: 1rem !important;
     position: relative !important;
-    z-index: 2 !important;
+    z-index: 5 !important;
 }
 
-/* Encabezados */
+/* LOGIN */
+.login-contenedor {
+    max-width: 760px;
+    margin: 40px auto 0 auto;
+    padding: 30px 34px 26px 34px;
+
+    background:
+        linear-gradient(
+            135deg,
+            rgba(255, 255, 255, 0.98),
+            rgba(241, 245, 249, 0.96)
+        );
+
+    border: 1px solid rgba(148, 163, 184, 0.65);
+    border-radius: 22px;
+
+    box-shadow:
+        0 14px 34px
+        rgba(15, 23, 42, 0.14);
+
+    text-align: center;
+}
+
+.login-foto {
+    width: 158px;
+    height: 158px;
+    margin: 0 auto 14px auto;
+    border-radius: 50%;
+    border: 6px solid #f59e0b;
+    background-position: center;
+    background-size: cover;
+    background-repeat: no-repeat;
+
+    box-shadow:
+        0 8px 20px
+        rgba(15, 23, 42, 0.18);
+}
+
+.login-titulo {
+    font-size: 40px;
+    font-weight: 950;
+    color: #0f172a;
+    margin: 8px 0 6px 0;
+}
+
+.login-subtitulo {
+    font-size: 17px;
+    font-weight: 650;
+    color: #334155;
+    margin-bottom: 12px;
+}
+
+.login-pie {
+    border-top: 1px solid #cbd5e1;
+    margin-top: 26px;
+    padding-top: 18px;
+    color: #64748b;
+    font-size: 14px;
+    line-height: 1.65;
+    text-align: center;
+}
+
+/* Inputs login */
+div[data-baseweb="input"] > div {
+    background: #ffffff !important;
+    color: #0f172a !important;
+    border: 1px solid #94a3b8 !important;
+    border-radius: 10px !important;
+}
+
+div[data-baseweb="input"] input {
+    color: #0f172a !important;
+    font-weight: 600 !important;
+}
+
+/* Botón ingresar */
+div[data-testid="stFormSubmitButton"] button {
+    background: linear-gradient(135deg, #16a34a, #15803d) !important;
+    color: #ffffff !important;
+    border: none !important;
+    border-radius: 12px !important;
+    height: 48px !important;
+    font-weight: 900 !important;
+    width: 100% !important;
+    box-shadow: 0 8px 18px rgba(22, 163, 74, 0.28) !important;
+}
+
+div[data-testid="stFormSubmitButton"] button:hover {
+    background: linear-gradient(135deg, #15803d, #166534) !important;
+    color: #ffffff !important;
+}
+
+/* Encabezado profesional */
+.encabezado-panel {
+    background:
+        linear-gradient(
+            135deg,
+            rgba(255, 255, 255, 0.98),
+            rgba(226, 232, 240, 0.92)
+        );
+
+    border: 1px solid rgba(148, 163, 184, 0.60);
+    border-left: 6px solid #16a34a;
+    border-radius: 18px;
+    padding: 24px 26px 22px 26px;
+
+    box-shadow:
+        0 12px 28px
+        rgba(15, 23, 42, 0.12);
+
+    margin-bottom: 20px;
+}
+
 .titulo {
     font-size: 40px;
-    font-weight: 850;
-    color: #f8fafc;
+    font-weight: 900;
+    color: #0f172a;
+    line-height: 1.15;
+    margin-bottom: 8px;
 }
 
 .subtitulo {
     font-size: 17px;
-    color: #cbd5e1;
-    margin: 6px 0 10px;
+    color: #1e293b;
+    margin: 8px 0 14px;
+    line-height: 1.45;
 }
 
 .metadata {
-    color: #94a3b8;
+    color: #64748b;
     font-size: 13px;
-    margin-bottom: 18px;
+    margin-top: 10px;
+}
+
+.badges-header {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 9px;
+    margin-top: 13px;
+}
+
+.badge-header {
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(37, 99, 235, 0.28);
+    color: #1e40af;
+    padding: 7px 11px;
+    border-radius: 999px;
+    font-size: 13px;
+    font-weight: 700;
+}
+
+.badge-verde {
+    border-color: rgba(22, 163, 74, 0.42);
+    color: #166534;
+}
+
+.badge-amarillo {
+    border-color: rgba(202, 138, 4, 0.42);
+    color: #854d0e;
 }
 
 .seccion {
     font-size: 23px;
-    font-weight: 800;
-    color: #f8fafc;
+    font-weight: 850;
+    color: #0f172a;
     margin: 32px 0 15px;
-    border-left: 5px solid #22c55e;
+    border-left: 5px solid #16a34a;
     padding-left: 11px;
 }
 
-/* Tarjetas */
+/* Tarjetas KPI - estilo ejecutivo */
 .tarjeta {
     background:
         linear-gradient(
-            135deg,
-            rgba(30, 41, 59, 0.94),
-            rgba(17, 24, 39, 0.94)
+            180deg,
+            rgba(255, 255, 255, 0.99),
+            rgba(248, 250, 252, 0.98)
         );
 
-    border: 1px solid #334155;
+    border: 1px solid rgba(148, 163, 184, 0.58);
+    border-top: 4px solid #334155;
     border-radius: 15px;
-    padding: 17px 11px;
-    min-height: 112px;
+    padding: 18px 12px 16px 12px;
+    height: 148px;
+    min-height: 148px;
+    box-sizing: border-box;
     text-align: center;
 
     box-shadow:
-        0 4px 14px
-        rgba(
-            0,
-            0,
-            0,
-            0.18
-        );
+        0 8px 18px
+        rgba(15, 23, 42, 0.08);
+}
+
+.tarjeta-verde {
+    border-top-color: #047857;
+}
+
+.tarjeta-azul {
+    border-top-color: #1d4ed8;
+}
+
+.tarjeta-naranjo {
+    border-top-color: #b45309;
+}
+
+.tarjeta-amarillo {
+    border-top-color: #92400e;
+}
+
+.tarjeta-morado {
+    border-top-color: #5b21b6;
 }
 
 .tarjeta-titulo {
-    font-size: 13px;
-    color: #cbd5e1;
-    font-weight: 700;
+    font-size: 12px;
+    color: #475569;
+    font-weight: 850;
+    letter-spacing: 0.25px;
+    text-transform: uppercase;
     min-height: 20px;
 }
 
 .tarjeta-valor {
-    font-size: 24px;
-    font-weight: 900;
+    font-size: 23px;
+    font-weight: 950;
     margin-top: 8px;
+    direction: ltr !important;
+    unicode-bidi: isolate !important;
+    white-space: nowrap !important;
+}
+
+.monto-clp {
+    direction: ltr !important;
+    unicode-bidi: isolate !important;
+    white-space: nowrap !important;
+}
+
+.simbolo-peso {
+    display: inline-block;
 }
 
 .tarjeta-subtitulo {
-    color: #94a3b8;
+    color: #64748b;
     font-size: 12px;
     margin-top: 7px;
     line-height: 1.35;
 }
 
+/* KPI doble: promedio mensual de traslados y disposición */
+.tarjeta-desglose {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 8px;
+}
+
+.tarjeta-desglose-fila {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 2px 3px;
+}
+
+.tarjeta-desglose-fila + .tarjeta-desglose-fila {
+    border-top: 1px solid #e2e8f0;
+    padding-top: 6px;
+}
+
+.tarjeta-desglose-concepto {
+    color: #475569;
+    font-size: 11px;
+    font-weight: 850;
+    text-align: left;
+    text-transform: uppercase;
+}
+
+.tarjeta-desglose-valor {
+    font-size: 13px;
+    font-weight: 950;
+    white-space: nowrap;
+    text-align: right;
+}
+
+.valor-traslado {
+    color: #ea580c;
+}
+
+.valor-disposicion {
+    color: #16a34a;
+}
+
 .verde {
-    color: #22c55e;
+    color: #047857;
 }
 
 .azul {
-    color: #38bdf8;
+    color: #1d4ed8;
 }
 
 .naranjo {
-    color: #fb923c;
+    color: #b45309;
 }
 
 .amarillo {
-    color: #fbbf24;
+    color: #92400e;
 }
 
-/* Resumen ejecutivo */
+.morado {
+    color: #5b21b6;
+}
+
 .resumen {
     background:
         linear-gradient(
             135deg,
-            rgba(23, 32, 51, 0.94),
-            rgba(17, 24, 39, 0.94)
+            rgba(255, 255, 255, 0.98),
+            rgba(241, 245, 249, 0.98)
         );
 
-    border: 1px solid #334155;
-    border-left: 5px solid #22c55e;
+    border: 1px solid rgba(148, 163, 184, 0.65);
+    border-left: 5px solid #16a34a;
     border-radius: 13px;
     padding: 16px 18px;
-    color: #e5e7eb;
+    color: #0f172a;
     line-height: 1.65;
+    font-size: 14px;
+
+    box-shadow:
+        0 6px 18px
+        rgba(15, 23, 42, 0.08);
 }
 
-/* Pie de página del panel */
 .pie-pagina {
-    border-top: 1px solid #334155;
-    color: #94a3b8;
+    border-top: 1px solid #cbd5e1;
+    color: #64748b;
     font-size: 12px;
     line-height: 1.65;
     margin-top: 38px;
@@ -468,11 +801,11 @@ body,
     text-align: center;
 }
 
-/* Filtros */
 div[data-baseweb="select"] > div {
     background: #ffffff !important;
     color: #111827 !important;
     border-radius: 8px !important;
+    border: 1px solid #cbd5e1 !important;
 }
 
 div[data-baseweb="select"] span,
@@ -486,504 +819,61 @@ h3,
 h4,
 p,
 label {
-    color: #e5e7eb;
+    color: #0f172a;
 }
 
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
 
+/* Estados de Pago por año */
+.ep-year-card {
+    background: rgba(255, 255, 255, 0.88);
+    border: 1px solid rgba(148, 163, 184, 0.62);
+    border-top: 4px solid #16a34a;
+    border-radius: 14px;
+    padding: 14px 13px 12px 13px;
+    box-shadow: 0 6px 16px rgba(15, 23, 42, 0.08);
+    min-height: 100%;
+}
 
-# =========================================================
-# SELLO DE AGUA
-# =========================================================
-
-def agregar_sello_agua_panel():
-    ruta_sello = buscar_archivo_sello()
-
-    if not ruta_sello:
-        st.warning(
-            "No se encontró la imagen del sello de agua. "
-            "Verifica que el archivo se llame logoredondo.png y esté en la misma carpeta que app.py."
-        )
-        return
-
-    sello = archivo_a_base64(
-        ruta_sello
-    )
-
-    tipo_imagen = obtener_tipo_imagen(
-        ruta_sello
-    )
-
-    st.markdown(
-        (
-            "<style>"
-
-            ".marca-agua-panel {"
-            "position:fixed;"
-            "top:54%;"
-            "left:50%;"
-            "width:760px;"
-            "height:760px;"
-            "transform:translate(-50%,-50%);"
-            f"background-image:url('data:image/{tipo_imagen};base64,{sello}');"
-            "background-position:center;"
-            "background-repeat:no-repeat;"
-            "background-size:contain;"
-            "opacity:0.05;"
-            "pointer-events:none;"
-            "z-index:1;"
-            "}"
-
-            ".block-container {"
-            "position:relative !important;"
-            "z-index:2 !important;"
-            "}"
-
-            "</style>"
-
-            '<div class="marca-agua-panel"></div>'
-        ),
-        unsafe_allow_html=True,
-    )
-
-
-def agregar_sello_agua_login():
-    ruta_sello = buscar_archivo_sello()
-
-    if not ruta_sello:
-        return
-
-    sello = archivo_a_base64(
-        ruta_sello
-    )
-
-    tipo_imagen = obtener_tipo_imagen(
-        ruta_sello
-    )
-
-    st.markdown(
-        (
-            "<style>"
-
-            ".login-sello-agua {"
-            "position:fixed;"
-            "top:58%;"
-            "left:50%;"
-            "width:760px;"
-            "height:760px;"
-            "transform:translate(-50%,-50%);"
-            f"background-image:url('data:image/{tipo_imagen};base64,{sello}');"
-            "background-position:center;"
-            "background-repeat:no-repeat;"
-            "background-size:contain;"
-            "opacity:0.05;"
-            "pointer-events:none;"
-            "z-index:1;"
-            "}"
-
-            ".login-wrapper,"
-            "div[data-testid='stForm'],"
-            ".login-pie-fijo {"
-            "position:relative !important;"
-            "z-index:3 !important;"
-            "}"
-
-            "</style>"
-
-            '<div class="login-sello-agua"></div>'
-        ),
-        unsafe_allow_html=True,
-    )
-
-
-# =========================================================
-# CONTROL DE ACCESO
-# =========================================================
-
-def obtener_usuarios_desde_secrets():
-    for seccion in (
-        "usuarios",
-        "users",
-    ):
-        if seccion in st.secrets:
-            return st.secrets[
-                seccion
-            ]
-
-    return {}
-
-
-def obtener_registro_usuario(usuario_ingresado):
-    usuario_buscado = str(
-        usuario_ingresado
-    ).strip().lower()
-
-    for usuario, configuracion in obtener_usuarios_desde_secrets().items():
-
-        if (
-            str(usuario).strip().lower()
-            == usuario_buscado
-        ):
-            return configuracion
-
-    return None
-
-
-def verificar_bcrypt(
-    clave_ingresada,
-    hash_guardado,
-):
-    try:
-        bcrypt = importlib.import_module(
-            "bcrypt"
-        )
-
-        return bool(
-            bcrypt.checkpw(
-                clave_ingresada.encode(
-                    "utf-8"
-                ),
-                hash_guardado.encode(
-                    "utf-8"
-                ),
-            )
-        )
-
-    except Exception:
-        return False
-
-
-def verificar_clave(
-    clave_ingresada,
-    configuracion_usuario,
-):
-    if configuracion_usuario is None:
-        return False
-
-    if isinstance(
-        configuracion_usuario,
-        Mapping,
-    ):
-        valor_guardado = (
-            configuracion_usuario.get(
-                "password_hash"
-            )
-            or configuracion_usuario.get(
-                "clave_hash"
-            )
-            or configuracion_usuario.get(
-                "hash"
-            )
-            or configuracion_usuario.get(
-                "password"
-            )
-            or configuracion_usuario.get(
-                "clave"
-            )
-        )
-
-    else:
-        valor_guardado = configuracion_usuario
-
-    if valor_guardado is None:
-        return False
-
-    valor_guardado = str(
-        valor_guardado
-    ).strip()
-
-    clave_ingresada = str(
-        clave_ingresada
-    )
-
-    if valor_guardado.startswith(
-        (
-            "$2a$",
-            "$2b$",
-            "$2y$",
-        )
-    ):
-        return verificar_bcrypt(
-            clave_ingresada,
-            valor_guardado,
-        )
-
-    if valor_guardado.lower().startswith(
-        "sha256$"
-    ):
-        hash_guardado = (
-            valor_guardado
-            .split(
-                "$",
-                1,
-            )[1]
-            .strip()
-            .lower()
-        )
-
-        hash_ingresado = hashlib.sha256(
-            clave_ingresada.encode(
-                "utf-8"
-            )
-        ).hexdigest()
-
-        return hmac.compare_digest(
-            hash_ingresado,
-            hash_guardado,
-        )
-
-    if re.fullmatch(
-        r"[a-fA-F0-9]{64}",
-        valor_guardado,
-    ):
-        hash_ingresado = hashlib.sha256(
-            clave_ingresada.encode(
-                "utf-8"
-            )
-        ).hexdigest()
-
-        return hmac.compare_digest(
-            hash_ingresado,
-            valor_guardado.lower(),
-        )
-
-    return hmac.compare_digest(
-        clave_ingresada,
-        valor_guardado,
-    )
-
-
-def construir_foto_acceso():
-    selfie = buscar_selfie()
-
-    if not selfie:
-        return (
-            '<div class="login-foto-placeholder">'
-            "👤"
-            "</div>"
-        )
-
-    extension = (
-        os.path.splitext(
-            selfie
-        )[1]
-        .lower()
-        .replace(
-            ".",
-            "",
-        )
-    )
-
-    if extension == "jpg":
-        extension = "jpeg"
-
-    imagen_base64 = archivo_a_base64(
-        selfie
-    )
-
-    return (
-        '<div class="login-foto-contenedor">'
-        '<img '
-        'class="login-foto" '
-        f'src="data:image/{extension};base64,{imagen_base64}" '
-        'alt="Foto de acceso">'
-        "</div>"
-    )
-
-
-def aplicar_estilo_acceso():
-    st.markdown(
-        """
-<style>
-
-/* Contenedor central */
-.login-wrapper {
-    width: 100%;
-    max-width: 680px;
-    margin: 0 auto;
+.ep-year-title {
+    color: #0f172a;
+    font-size: 19px;
+    font-weight: 900;
     text-align: center;
-    position: relative;
-    z-index: 4;
+    margin-bottom: 10px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid #cbd5e1;
 }
 
-/* Fotografía circular */
-.login-foto-contenedor,
-.login-foto-placeholder {
-    width: 165px;
-    height: 165px;
-    margin: 0 auto 14px auto;
-    border-radius: 50%;
-    border: 4px solid #f59e0b;
-    overflow: hidden;
-    background: #1e293b;
+.ep-document-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
 
-    box-shadow:
-        0 0 0 6px rgba(245, 158, 11, 0.10),
-        0 10px 28px rgba(0, 0, 0, 0.38);
-
+.ep-document-link {
     display: flex;
     align-items: center;
-    justify-content: center;
-}
-
-.login-foto {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    object-position: center 46%;
-    transform: scale(1.34);
-}
-
-.login-foto-placeholder {
-    color: #f8fafc;
-    font-size: 62px;
-}
-
-/* Título y subtítulo */
-.login-titulo {
-    color: #f8fafc;
-    font-size: 38px;
-    font-weight: 900;
-    line-height: 1.10;
-    margin: 7px 0 9px 0;
-
-    text-shadow:
-        0 2px 4px rgba(0, 0, 0, 0.42);
-}
-
-.login-subtitulo {
-    color: #f8fafc;
-    font-size: 15px;
-    font-weight: 700;
-    line-height: 1.45;
-    margin: 0 0 15px 0;
-}
-
-/* Formulario */
-div[data-testid="stForm"] {
-    background: transparent !important;
-    border: 0 !important;
-    padding: 0 !important;
-    box-shadow: none !important;
-    position: relative !important;
-    z-index: 4 !important;
-}
-
-div[data-testid="stForm"] label {
-    color: #f8fafc !important;
-    font-weight: 800 !important;
-    font-size: 14px !important;
-}
-
-div[data-testid="stForm"] input {
-    background: #f8fafc !important;
-    color: #111827 !important;
-    border-radius: 8px !important;
-    min-height: 47px !important;
-}
-
-/* Botón ingresar */
-div[data-testid="stFormSubmitButton"] button {
-    background: #ff4040 !important;
-    color: #ffffff !important;
-    border: none !important;
-    border-radius: 8px !important;
-    font-weight: 900 !important;
-    min-height: 46px !important;
-    margin-top: 7px !important;
-}
-
-div[data-testid="stFormSubmitButton"] button:hover {
-    background: #ef4444 !important;
-    color: #ffffff !important;
-    border: none !important;
-}
-
-/* Icono para mostrar la contraseña */
-div[data-testid="stTextInput"] button {
-    background: transparent !important;
-    color: #374151 !important;
-    border: none !important;
-    box-shadow: none !important;
-}
-
-div[data-testid="stTextInput"] button:hover {
-    background: transparent !important;
-    color: #111827 !important;
-    border: none !important;
-}
-
-/* Pie fijo inferior */
-.login-pie-fijo {
-    position: fixed;
-    left: 50%;
-    bottom: 24px;
-    transform: translateX(-50%);
-    width: min(92vw, 720px);
-    border-top: 1px solid rgba(148, 163, 184, 0.48);
-    padding-top: 14px;
-    text-align: center;
-    line-height: 1.80;
-    z-index: 5;
-}
-
-/* Texto principal inferior */
-.login-pie-titulo {
-    color: #f8fafc;
-    font-size: 16px;
-    font-weight: 900;
-    letter-spacing: 0.2px;
-}
-
-/* Textos secundarios inferiores */
-.login-pie-texto {
-    color: #60a5fa;
+    gap: 7px;
+    padding: 7px 9px;
+    border: 1px solid rgba(148, 163, 184, 0.48);
+    border-radius: 8px;
+    background: rgba(248, 250, 252, 0.90);
+    color: #1e293b !important;
+    text-decoration: none !important;
     font-size: 13px;
-    font-weight: 600;
+    font-weight: 700;
+    line-height: 1.2;
+    transition: 0.15s ease-in-out;
 }
 
-/* Ajustes para celulares */
-@media screen and (max-width: 768px) {
+.ep-document-link:hover {
+    background: #e2e8f0;
+    border-color: #16a34a;
+    transform: translateY(-1px);
+}
 
-    .block-container {
-        padding-left: 1rem !important;
-        padding-right: 1rem !important;
-    }
-
-    .login-foto-contenedor,
-    .login-foto-placeholder {
-        width: 145px;
-        height: 145px;
-    }
-
-    .login-titulo {
-        font-size: 31px;
-    }
-
-    .login-subtitulo {
-        font-size: 13px;
-    }
-
-    .login-sello-agua {
-        width: 620px;
-        height: 620px;
-    }
-
-    .login-pie-fijo {
-        bottom: 18px;
-        padding-top: 11px;
-    }
-
-    .login-pie-titulo {
-        font-size: 14px;
-    }
-
-    .login-pie-texto {
-        font-size: 12px;
-    }
+.ep-document-icon {
+    font-size: 14px;
 }
 
 </style>
@@ -992,123 +882,149 @@ div[data-testid="stTextInput"] button:hover {
     )
 
 
-def mostrar_encabezado_acceso():
-    foto = construir_foto_acceso()
+def agregar_sello_agua_panel():
+    ruta_sello = buscar_imagen_por_nombre(SELLO_AGUA_BASE)
 
-    encabezado = (
-        '<div class="login-wrapper">'
+    if not ruta_sello:
+        return
 
-        f"{foto}"
-
-        '<div class="login-titulo">'
-        "🔐 Acceso restringido"
-        "</div>"
-
-        '<div class="login-subtitulo">'
-        "Ingresa tu usuario y contraseña para visualizar el panel."
-        "</div>"
-
-        "</div>"
-    )
+    sello = archivo_a_base64(ruta_sello)
+    tipo_mime = obtener_tipo_mime(ruta_sello)
 
     st.markdown(
-        encabezado,
+        (
+            "<style>"
+
+            ".marca-agua-saivam {"
+            "position: fixed;"
+            "inset: 0;"
+            "width: 100vw;"
+            "height: 100vh;"
+            f"background-image: url('data:{tipo_mime};base64,{sello}');"
+            "background-repeat: no-repeat;"
+            "background-position: center center;"
+            "background-size: cover;"
+            "opacity: 0.09;"
+            "z-index: 1;"
+            "pointer-events: none;"
+            "}"
+
+            "</style>"
+
+            "<div class='marca-agua-saivam'></div>"
+        ),
         unsafe_allow_html=True,
     )
 
 
-def mostrar_pie_acceso():
-    pie = (
-        '<div class="login-pie-fijo">'
+# =========================================================
+# LOGIN CON STREAMLIT SECRETS
+# Formato esperado:
+#
+# [usuarios]
+# Ricardo = "clave"
+# Alexis = "clave"
+# Moises = "clave"
+# Victor = "clave"
+# =========================================================
 
-        '<div class="login-pie-titulo">'
-        "Panel desarrollado por Ricardo Grez"
-        "</div>"
+def obtener_usuarios_autorizados():
+    try:
+        usuarios = dict(st.secrets["usuarios"])
 
-        '<div class="login-pie-texto">'
-        "Administrador de Contrato | SAIVAM"
-        "</div>"
+        if not usuarios:
+            st.error(
+                "La sección [usuarios] existe, pero no tiene usuarios configurados."
+            )
+            st.stop()
 
-        '<div class="login-pie-texto">'
-        "Acceso restringido para usuarios autorizados"
-        "</div>"
+        return usuarios
 
-        "</div>"
-    )
+    except Exception:
+        st.error(
+            "No se encontraron usuarios en Streamlit Secrets. "
+            "Configura las credenciales con este formato: "
+            "[usuarios] Ricardo = \"clave\""
+        )
+        st.stop()
+
+
+def credenciales_validas(usuario_ingresado, clave_ingresada):
+    usuarios = obtener_usuarios_autorizados()
+
+    usuario_ingresado_norm = normalizar(usuario_ingresado)
+
+    for usuario_guardado, clave_guardada in usuarios.items():
+        if normalizar(usuario_guardado) == usuario_ingresado_norm:
+            return str(clave_ingresada) == str(clave_guardada), usuario_guardado
+
+    return False, None
+
+
+def mostrar_login():
+    ruta_selfie = buscar_imagen_por_nombre(SELFIE_BASE)
+
+    if ruta_selfie:
+        selfie_base64 = archivo_a_base64(ruta_selfie)
+        foto_css = f"background-image: url('data:image/png;base64,{selfie_base64}');"
+    else:
+        foto_css = "background: #e2e8f0;"
 
     st.markdown(
-        pie,
+        (
+            '<div class="login-contenedor">'
+            f'<div class="login-foto" style="{foto_css}"></div>'
+            '<div class="login-titulo">🔐 Acceso restringido</div>'
+            '<div class="login-subtitulo">'
+            'Ingresa tu usuario y contraseña para visualizar el panel.'
+            '</div>'
+            '</div>'
+        ),
         unsafe_allow_html=True,
     )
 
+    col1, col2, col3 = st.columns([1.35, 2.3, 1.35])
 
-def mostrar_acceso_restringido():
-    aplicar_estilo_acceso()
-
-    agregar_sello_agua_login()
-
-    columna_izquierda, columna_central, columna_derecha = st.columns(
-        [
-            1.00,
-            1.28,
-            1.00,
-        ]
-    )
-
-    with columna_central:
-
-        mostrar_encabezado_acceso()
-
-        with st.form(
-            "formulario_acceso",
-            clear_on_submit=False,
-        ):
-            usuario = st.text_input(
-                "Usuario",
-                key="campo_usuario",
-            )
-
-            clave = st.text_input(
-                "Contraseña",
-                type="password",
-                key="campo_clave",
-            )
-
-            ingresar = st.form_submit_button(
-                "Ingresar",
-                use_container_width=True,
-            )
+    with col2:
+        with st.form("formulario_login"):
+            usuario = st.text_input("Usuario")
+            clave = st.text_input("Contraseña", type="password")
+            ingresar = st.form_submit_button("Ingresar", use_container_width=True)
 
         if ingresar:
+            usuario = usuario.strip()
 
-            registro_usuario = obtener_registro_usuario(
-                usuario
-            )
+            acceso, usuario_validado = credenciales_validas(usuario, clave)
 
-            acceso_valido = verificar_clave(
-                clave,
-                registro_usuario,
-            )
-
-            if acceso_valido:
-                st.session_state[
-                    "acceso_autorizado"
-                ] = True
-
-                st.session_state[
-                    "usuario_autorizado"
-                ] = str(
-                    usuario
-                ).strip()
-
-                st.rerun()
-
+            if acceso:
+                st.session_state["autenticado"] = True
+                st.session_state["usuario"] = usuario_validado
+                reiniciar_app()
             else:
-                st.error(
-                    "Usuario o contraseña incorrectos."
-                )
+                st.error("Usuario o contraseña incorrectos.")
 
-    mostrar_pie_acceso()
+        st.markdown(
+            (
+                '<div class="login-pie">'
+                f'<b>Panel desarrollado por {AUTOR}</b><br>'
+                f'{CARGO} | {EMPRESA}<br>'
+                'Acceso restringido para usuarios autorizados'
+                '</div>'
+            ),
+            unsafe_allow_html=True,
+        )
+
+
+def validar_acceso():
+    if "autenticado" not in st.session_state:
+        st.session_state["autenticado"] = False
+
+    if "usuario" not in st.session_state:
+        st.session_state["usuario"] = ""
+
+    if not st.session_state["autenticado"]:
+        mostrar_login()
+        st.stop()
 
 
 # =========================================================
@@ -1116,19 +1032,12 @@ def mostrar_acceso_restringido():
 # =========================================================
 
 @st.cache_data
-def cargar_datos(ruta_excel):
-    datos = (
-        pd.read_excel(
-            ruta_excel
-        )
-        .dropna(
-            how="all"
-        )
-        .dropna(
-            axis=1,
-            how="all",
-        )
-    )
+def cargar_datos(ruta_excel, firma_archivo=None):
+    """Carga la planilla, normaliza encabezados y evita columnas duplicadas."""
+    _ = firma_archivo
+
+    datos = pd.read_excel(ruta_excel)
+    datos = datos.dropna(how="all")
 
     datos.columns = (
         datos.columns
@@ -1139,199 +1048,766 @@ def cargar_datos(ruta_excel):
     datos = datos.loc[
         :,
         ~datos.columns.str.contains(
-            "Unnamed",
+            r"^Unnamed",
             case=False,
+            regex=True,
         ),
     ]
 
-    columna_fecha = buscar_columna(
-        datos.columns,
-        "Fecha",
-    )
+    columnas_originales = list(datos.columns)
 
-    if columna_fecha is None:
+    equivalencias = {
+        "Mes": [
+            "Mes",
+        ],
+        "Periodo": [
+            "Periodo",
+            "Período",
+        ],
+        "Servicio_fijo": [
+            "Servicio_fijo",
+            "Servicio fijo",
+            "Contrato fijo",
+        ],
+        "Transporte_residuos": [
+            "Transporte_residuos",
+            "Transporte residuos",
+            "Transporte de residuos",
+            "Total transporte",
+        ],
+        "Disposicion_residuos": [
+            "Disposicion_residuos",
+            "Disposición_residuos",
+            "Disposición residuos",
+            "Disposicion residuos",
+            "Disposición",
+            "Disposicion",
+            "Disposición final",
+            "Disposicion final",
+            "Total disposición",
+            "Total disposicion",
+            "Disp. Final",
+        ],
+        "Traslados_residuos": [
+            "Traslados_residuos",
+            "Traslados residuos",
+            "Traslados",
+            "Traslado",
+            "Costo traslados",
+            "Costo de traslados",
+            "Total traslados",
+        ],
+        "Costo_RAD": [
+            "Costo_RAD",
+            "Costo RAD",
+            "RAD disposición",
+            "RAD disposicion",
+        ],
+        "Costo_Corteza": [
+            "Costo_Corteza",
+            "Costo Corteza",
+            "Corteza disposición",
+            "Corteza disposicion",
+        ],
+        "Costo_Escoria": [
+            "Costo_Escoria",
+            "Costo Escoria",
+            "Escoria disposición",
+            "Escoria disposicion",
+        ],
+        "Costo_Cenizas": [
+            "Costo_Cenizas",
+            "Costo Cenizas",
+            "Costo Ceniza",
+            "Cenizas disposición",
+            "Cenizas disposicion",
+        ],
+        "Adicionales": [
+            "Adicionales",
+            "Adicional",
+            "Total adicionales",
+        ],
+        "Reembolso": [
+            "Reembolso",
+            "Rembolso",
+            "Reembolsos",
+            "Rembolsos",
+        ],
+        "Insumos_arriendo_herramientas": [
+            "Insumos_arriendo_herramientas",
+            "Insumos, arriendo y herramientas",
+            "Insumos arriendo y herramientas",
+            "Insumos y herramientas",
+        ],
+        "Horas_extras": [
+            "Horas_extras",
+            "Horas Extras",
+            "Horas extra",
+            "HH Extras",
+        ],
+        "Bonificaciones": [
+            "Bonificaciones",
+            "Bonificación",
+            "Bonificacion",
+            "Bonos",
+        ],
+        "Cot_adicionales": [
+            "Cot_adicionales",
+            "Cot Adicionales",
+            "Cotizaciones adicionales",
+            "Cotización adicionales",
+            "Cotizacion adicionales",
+        ],
+        "Total_neto": [
+            "Total_neto",
+            "Total neto",
+            "Total neto acumulado",
+            "Total_net",
+            "Total net",
+        ],
+        "IVA_19": [
+            "IVA_19",
+            "IVA 19",
+            "IVA 19%",
+            "IVA",
+        ],
+        "Total_bruto": [
+            "Total_bruto",
+            "Total bruto",
+            "Total bruto acumulado",
+            "Valor total acumulado",
+            "Total acumulado",
+            "Monto final estados de pago",
+            "Valor_total",
+            "Valor total",
+            "Valor tot",
+        ],
+        "Ton_RAD": [
+            "Ton_RAD",
+            "Ton RAD",
+            "RAD ton",
+        ],
+        "Ton_Corteza_G3": [
+            "Ton_Corteza_G3",
+            "Ton Corteza G3",
+            "Ton_Corteza",
+            "Ton Corteza",
+            "Corteza G3",
+        ],
+        "Ton_Escoria": [
+            "Ton_Escoria",
+            "Ton Escoria",
+            "Escoria ton",
+        ],
+        "Ton_Cenizas": [
+            "Ton_Cenizas",
+            "Ton Cenizas",
+            "Ton Ceniza",
+            "Cenizas ton",
+        ],
+        "Ton_Total": [
+            "Ton_Total",
+            "Ton Total",
+            "Toneladas totales",
+            "Total ton",
+        ],
+    }
+
+    # -----------------------------------------------------
+    # 1. MAPEO POR ENCABEZADO
+    # -----------------------------------------------------
+    mapa_alias = {}
+
+    for objetivo, alias in equivalencias.items():
+        for nombre in alias:
+            mapa_alias[normalizar(nombre)] = objetivo
+
+    renombres = {}
+    objetivos_asignados = set()
+
+    for columna in columnas_originales:
+        columna_normalizada = normalizar(columna)
+        objetivo = mapa_alias.get(columna_normalizada)
+
+        if not objetivo:
+            if columna_normalizada.startswith("servicio fi"):
+                objetivo = "Servicio_fijo"
+            elif columna_normalizada.startswith("contrato fi"):
+                objetivo = "Servicio_fijo"
+            elif columna_normalizada.startswith("transporte re"):
+                objetivo = "Transporte_residuos"
+            elif "disposici" in columna_normalizada:
+                objetivo = "Disposicion_residuos"
+            elif "traslad" in columna_normalizada:
+                objetivo = "Traslados_residuos"
+            elif columna_normalizada.startswith("adicionale"):
+                objetivo = "Adicionales"
+            elif "rembols" in columna_normalizada or "reembols" in columna_normalizada:
+                objetivo = "Reembolso"
+            elif columna_normalizada.startswith("insumos"):
+                objetivo = "Insumos_arriendo_herramientas"
+            elif columna_normalizada.startswith("horas extr"):
+                objetivo = "Horas_extras"
+            elif columna_normalizada.startswith("bonific"):
+                objetivo = "Bonificaciones"
+            elif columna_normalizada.startswith("cot adicion"):
+                objetivo = "Cot_adicionales"
+            elif columna_normalizada.startswith("total net"):
+                objetivo = "Total_neto"
+            elif columna_normalizada.startswith("iva"):
+                objetivo = "IVA_19"
+            elif (
+                columna_normalizada.startswith("valor tot")
+                or columna_normalizada.startswith("total bruto")
+            ):
+                objetivo = "Total_bruto"
+            elif columna_normalizada.startswith("ton rad"):
+                objetivo = "Ton_RAD"
+            elif columna_normalizada.startswith("ton corteza"):
+                objetivo = "Ton_Corteza_G3"
+            elif columna_normalizada.startswith("ton escori"):
+                objetivo = "Ton_Escoria"
+            elif columna_normalizada.startswith("ton ceniz"):
+                objetivo = "Ton_Cenizas"
+            elif columna_normalizada.startswith("ton total"):
+                objetivo = "Ton_Total"
+
+        # Solo una columna puede alimentar cada campo objetivo.
+        if objetivo and objetivo not in objetivos_asignados:
+            renombres[columna] = objetivo
+            objetivos_asignados.add(objetivo)
+
+    if renombres:
+        datos = datos.rename(columns=renombres)
+
+    # -----------------------------------------------------
+    # 2. RESPALDO POR POSICIÓN
+    # Solo completa columnas que no pudieron identificarse por nombre.
+    # -----------------------------------------------------
+    esquema_20 = [
+        "Mes",
+        "Periodo",
+        "Servicio_fijo",
+        "Transporte_residuos",
+        "Disposicion_residuos",
+        "Traslados_residuos",
+        "Adicionales",
+        "Reembolso",
+        "Insumos_arriendo_herramientas",
+        "Horas_extras",
+        "Bonificaciones",
+        "Cot_adicionales",
+        "Total_neto",
+        "IVA_19",
+        "Total_bruto",
+        "Ton_RAD",
+        "Ton_Corteza_G3",
+        "Ton_Escoria",
+        "Ton_Cenizas",
+        "Ton_Total",
+    ]
+
+    esquema_19 = [
+        "Mes",
+        "Periodo",
+        "Servicio_fijo",
+        "Transporte_residuos",
+        "Disposicion_residuos",
+        "Traslados_residuos",
+        "Adicionales",
+        "Reembolso",
+        "Insumos_arriendo_herramientas",
+        "Horas_extras",
+        "Cot_adicionales",
+        "Total_neto",
+        "IVA_19",
+        "Total_bruto",
+        "Ton_RAD",
+        "Ton_Corteza_G3",
+        "Ton_Escoria",
+        "Ton_Cenizas",
+        "Ton_Total",
+    ]
+
+    esquema_15 = [
+        "Mes",
+        "Periodo",
+        "Servicio_fijo",
+        "Transporte_residuos",
+        "Disposicion_residuos",
+        "Traslados_residuos",
+        "Adicionales",
+        "Total_neto",
+        "IVA_19",
+        "Total_bruto",
+        "Ton_RAD",
+        "Ton_Corteza_G3",
+        "Ton_Escoria",
+        "Ton_Cenizas",
+        "Ton_Total",
+    ]
+
+    esquema_13 = [
+        "Mes",
+        "Periodo",
+        "Servicio_fijo",
+        "Transporte_residuos",
+        "Adicionales",
+        "Total_neto",
+        "IVA_19",
+        "Total_bruto",
+        "Ton_RAD",
+        "Ton_Corteza_G3",
+        "Ton_Escoria",
+        "Ton_Cenizas",
+        "Ton_Total",
+    ]
+
+    cantidad_columnas = len(columnas_originales)
+
+    if cantidad_columnas >= 20:
+        esquema_posicional = esquema_20
+    elif cantidad_columnas == 19:
+        esquema_posicional = esquema_19
+    elif cantidad_columnas >= 15:
+        esquema_posicional = esquema_15
+    else:
+        esquema_posicional = esquema_13
+
+    columnas_actuales = list(datos.columns)
+    renombres_posicionales = {}
+    objetivos_existentes = set(datos.columns)
+
+    for indice, objetivo in enumerate(esquema_posicional):
+        if indice >= len(columnas_actuales):
+            break
+
+        if objetivo in objetivos_existentes:
+            continue
+
+        columna_actual = columnas_actuales[indice]
+
+        # No renombrar una columna ya reconocida como otro campo canónico.
+        if columna_actual in equivalencias:
+            continue
+
+        if columna_actual in esquema_posicional:
+            continue
+
+        renombres_posicionales[columna_actual] = objetivo
+        objetivos_existentes.add(objetivo)
+
+    if renombres_posicionales:
+        datos = datos.rename(columns=renombres_posicionales)
+
+    # Respaldo para tonelajes: las últimas cinco columnas suelen ser
+    # RAD, Corteza G3, Escoria, Cenizas y Total.
+    objetivos_toneladas = [
+        "Ton_RAD",
+        "Ton_Corteza_G3",
+        "Ton_Escoria",
+        "Ton_Cenizas",
+        "Ton_Total",
+    ]
+
+    columnas_actuales = list(datos.columns)
+
+    if len(columnas_actuales) >= 5:
+        ultimas_cinco = columnas_actuales[-5:]
+        renombres_toneladas = {}
+
+        for columna_actual, objetivo in zip(
+            ultimas_cinco,
+            objetivos_toneladas,
+        ):
+            if objetivo not in datos.columns and columna_actual not in objetivos_toneladas:
+                renombres_toneladas[columna_actual] = objetivo
+
+        if renombres_toneladas:
+            datos = datos.rename(columns=renombres_toneladas)
+
+    # Seguridad final: nunca permitir nombres duplicados.
+    if datos.columns.duplicated().any():
+        columnas_consolidadas = {}
+
+        for nombre in pd.unique(datos.columns):
+            seleccion = datos.loc[:, datos.columns == nombre]
+
+            if seleccion.shape[1] == 1:
+                columnas_consolidadas[nombre] = seleccion.iloc[:, 0]
+            else:
+                columnas_consolidadas[nombre] = seleccion.bfill(axis=1).iloc[:, 0]
+
+        datos = pd.DataFrame(columnas_consolidadas)
+
+    # -----------------------------------------------------
+    # 3. VALIDACIÓN Y LIMPIEZA
+    # -----------------------------------------------------
+    faltantes_principales = [
+        columna
+        for columna in [
+            "Mes",
+            "Periodo",
+            "Servicio_fijo",
+            "Transporte_residuos",
+        ]
+        if columna not in datos.columns
+    ]
+
+    if faltantes_principales:
         raise ValueError(
-            "No se encontró la columna Fecha."
+            "No fue posible reconocer las columnas principales: "
+            + ", ".join(faltantes_principales)
+            + ". Encabezados detectados: "
+            + ", ".join(map(str, columnas_originales))
         )
 
-    datos = datos.rename(
-        columns={
-            columna_fecha: "Fecha"
-        }
+    datos = datos[
+        datos["Mes"].notna()
+    ].copy()
+
+    datos = datos[
+        ~datos["Mes"]
+        .astype(str)
+        .str.lower()
+        .str.contains("total", na=False)
+    ].copy()
+
+    # Todas estas columnas son opcionales y no deben detener el panel.
+    columnas_opcionales = [
+        "Disposicion_residuos",
+        "Traslados_residuos",
+        "Adicionales",
+        *COLUMNAS_DETALLE_ADICIONALES,
+        "Total_neto",
+        "IVA_19",
+        "Total_bruto",
+        "Ton_RAD",
+        "Ton_Corteza_G3",
+        "Ton_Escoria",
+        "Ton_Cenizas",
+        "Ton_Total",
+        "Costo_RAD",
+        "Costo_Corteza",
+        "Costo_Escoria",
+        "Costo_Cenizas",
+    ]
+
+    for columna in columnas_opcionales:
+        if columna not in datos.columns:
+            datos[columna] = 0.0
+
+    columnas_numericas = [
+        "Servicio_fijo",
+        "Transporte_residuos",
+        "Disposicion_residuos",
+        "Traslados_residuos",
+        "Adicionales",
+        *COLUMNAS_DETALLE_ADICIONALES,
+        "Total_neto",
+        "IVA_19",
+        "Total_bruto",
+        "Ton_RAD",
+        "Ton_Corteza_G3",
+        "Ton_Escoria",
+        "Ton_Cenizas",
+        "Ton_Total",
+        "Costo_RAD",
+        "Costo_Corteza",
+        "Costo_Escoria",
+        "Costo_Cenizas",
+    ]
+
+    for columna in columnas_numericas:
+        datos[columna] = datos[columna].map(limpiar_numero)
+
+    # -----------------------------------------------------
+    # 4. CÁLCULOS DE RESPALDO
+    # -----------------------------------------------------
+    datos["Adicionales_desglosados"] = datos[
+        COLUMNAS_DETALLE_ADICIONALES
+    ].sum(axis=1)
+
+    mascara_adicionales = (
+        datos["Adicionales"].eq(0)
+        & datos["Adicionales_desglosados"].gt(0)
     )
 
-    datos[
-        "Fecha"
-    ] = datos[
-        "Fecha"
-    ].apply(
-        convertir_fecha
+    datos.loc[
+        mascara_adicionales,
+        "Adicionales",
+    ] = datos.loc[
+        mascara_adicionales,
+        "Adicionales_desglosados",
+    ]
+
+    total_neto_calculado = (
+        datos["Servicio_fijo"]
+        + datos["Transporte_residuos"]
+        + datos["Adicionales"]
+    )
+
+    mascara_total_neto = (
+        datos["Total_neto"].eq(0)
+        & total_neto_calculado.ne(0)
+    )
+
+    datos.loc[
+        mascara_total_neto,
+        "Total_neto",
+    ] = total_neto_calculado[mascara_total_neto]
+
+    mascara_iva = (
+        datos["IVA_19"].eq(0)
+        & datos["Total_neto"].ne(0)
+    )
+
+    datos.loc[
+        mascara_iva,
+        "IVA_19",
+    ] = datos.loc[
+        mascara_iva,
+        "Total_neto",
+    ] * 0.19
+
+    total_bruto_calculado = (
+        datos["Total_neto"]
+        + datos["IVA_19"]
+    )
+
+    mascara_total_bruto = (
+        datos["Total_bruto"].eq(0)
+        & total_bruto_calculado.ne(0)
+    )
+
+    datos.loc[
+        mascara_total_bruto,
+        "Total_bruto",
+    ] = total_bruto_calculado[mascara_total_bruto]
+
+    toneladas_calculadas = datos[
+        [
+            "Ton_RAD",
+            "Ton_Corteza_G3",
+            "Ton_Escoria",
+            "Ton_Cenizas",
+        ]
+    ].sum(axis=1)
+
+    mascara_ton_total = (
+        datos["Ton_Total"].eq(0)
+        & toneladas_calculadas.gt(0)
+    )
+
+    datos.loc[
+        mascara_ton_total,
+        "Ton_Total",
+    ] = toneladas_calculadas[mascara_ton_total]
+
+    disposicion_por_residuo = datos[
+        [
+            "Costo_RAD",
+            "Costo_Corteza",
+            "Costo_Escoria",
+            "Costo_Cenizas",
+        ]
+    ].sum(axis=1)
+
+    mascara_disposicion = (
+        datos["Disposicion_residuos"].eq(0)
+        & disposicion_por_residuo.gt(0)
+    )
+
+    datos.loc[
+        mascara_disposicion,
+        "Disposicion_residuos",
+    ] = disposicion_por_residuo[mascara_disposicion]
+
+    # Si la planilla solo trae uno de los dos conceptos, calcular el otro
+    # por diferencia respecto del total de transporte.
+    mascara_traslado = (
+        datos["Traslados_residuos"].eq(0)
+        & datos["Disposicion_residuos"].gt(0)
+        & datos["Transporte_residuos"].gt(0)
+    )
+
+    datos.loc[
+        mascara_traslado,
+        "Traslados_residuos",
+    ] = (
+        datos.loc[mascara_traslado, "Transporte_residuos"]
+        - datos.loc[mascara_traslado, "Disposicion_residuos"]
+    ).clip(lower=0)
+
+    mascara_disposicion_desde_traslado = (
+        datos["Disposicion_residuos"].eq(0)
+        & datos["Traslados_residuos"].gt(0)
+        & datos["Transporte_residuos"].gt(0)
+    )
+
+    datos.loc[
+        mascara_disposicion_desde_traslado,
+        "Disposicion_residuos",
+    ] = (
+        datos.loc[mascara_disposicion_desde_traslado, "Transporte_residuos"]
+        - datos.loc[mascara_disposicion_desde_traslado, "Traslados_residuos"]
+    ).clip(lower=0)
+
+    datos["Tiene_detalle_costos_residuos"] = (
+        datos["Disposicion_residuos"].abs().sum() > 0
+        or datos["Traslados_residuos"].abs().sum() > 0
+    )
+
+    # -----------------------------------------------------
+    # 5. FECHAS Y VARIABLES PARA EL PANEL
+    # -----------------------------------------------------
+    datos["Fecha"] = datos.apply(
+        lambda fila: convertir_fecha_desde_mes_periodo(
+            fila["Mes"],
+            fila["Periodo"],
+        ),
+        axis=1,
     )
 
     datos = datos[
-        datos[
-            "Fecha"
-        ].notna()
+        datos["Fecha"].notna()
     ].copy()
 
-    if datos.empty:
-        raise ValueError(
-            "No se detectaron fechas válidas en la planilla."
-        )
+    datos["Año"] = datos["Fecha"].dt.year
+    datos["Mes_Num"] = datos["Fecha"].dt.month
+    datos["Mes_Nombre"] = datos["Mes_Num"].map(MESES)
 
-    datos[
-        "Año"
-    ] = datos[
-        "Fecha"
-    ].dt.year
-
-    datos[
-        "Mes"
-    ] = datos[
-        "Fecha"
-    ].dt.month
-
-    datos[
-        "Mes_Nombre"
-    ] = datos[
-        "Mes"
-    ].map(
-        MESES
-    )
-
-    datos[
-        "Periodo"
-    ] = datos[
-        "Fecha"
-    ].dt.strftime(
-        "%Y-%m"
-    )
-
-    datos[
-        "Periodo_Texto"
-    ] = (
-        datos[
-            "Mes_Nombre"
-        ]
+    datos["Periodo_Texto"] = (
+        datos["Mes_Nombre"]
         + " "
-        + datos[
-            "Año"
-        ].astype(str)
+        + datos["Año"].astype(str)
     )
+
+    datos["Periodo_Orden"] = datos["Fecha"].dt.strftime("%Y-%m")
+
+    datos["Total_bruto_MM"] = datos["Total_bruto"] / 1_000_000
+    datos["Total_neto_MM"] = datos["Total_neto"] / 1_000_000
+    datos["Servicio_fijo_MM"] = datos["Servicio_fijo"] / 1_000_000
+    datos["Transporte_residuos_MM"] = datos["Transporte_residuos"] / 1_000_000
+    datos["Adicionales_MM"] = datos["Adicionales"] / 1_000_000
+    datos["Adicionales_desglosados_MM"] = (
+        datos["Adicionales_desglosados"] / 1_000_000
+    )
+
+    for columna in COLUMNAS_DETALLE_ADICIONALES:
+        datos[f"{columna}_MM"] = datos[columna] / 1_000_000
+
+    datos["Disposicion_residuos_MM"] = (
+        datos["Disposicion_residuos"] / 1_000_000
+    )
+
+    datos["Traslados_residuos_MM"] = (
+        datos["Traslados_residuos"] / 1_000_000
+    )
+
+    datos["Costo_transporte_por_ton"] = datos.apply(
+        lambda fila: (
+            fila["Transporte_residuos"] / fila["Ton_Total"]
+            if fila["Ton_Total"] > 0
+            else 0
+        ),
+        axis=1,
+    )
+
+    datos["Participacion_transporte"] = datos.apply(
+        lambda fila: (
+            fila["Transporte_residuos"] / fila["Total_neto"] * 100
+            if fila["Total_neto"] > 0
+            else 0
+        ),
+        axis=1,
+    )
+
+    datos["Participacion_adicionales"] = datos.apply(
+        lambda fila: (
+            fila["Adicionales"] / fila["Total_neto"] * 100
+            if fila["Total_neto"] > 0
+            else 0
+        ),
+        axis=1,
+    )
+
+    datos = datos.sort_values("Fecha").reset_index(drop=True)
 
     return datos
 
 
-@st.cache_data
-def preparar_datos(datos):
-    columnas_base = [
-        "Fecha",
-        "Año",
-        "Mes",
-        "Mes_Nombre",
-        "Periodo",
-        "Periodo_Texto",
-    ]
+def preparar_residuos_largo(datos):
+    registros = []
 
-    registros_costos = []
-    registros_toneladas = []
+    mapa_residuos = {
+        "RAD": "Ton_RAD",
+        "Corteza G3": "Ton_Corteza_G3",
+        "Escoria": "Ton_Escoria",
+        "Cenizas": "Ton_Cenizas",
+    }
 
-    for residuo in RESIDUOS:
-
-        for tipo_costo in TIPOS_COSTO:
-
-            columna = buscar_columna(
-                datos.columns,
-                f"{tipo_costo} {residuo}",
-            )
-
-            if columna is None:
-                raise ValueError(
-                    "No se encontró la columna: "
-                    f"{tipo_costo} {residuo}"
-                )
-
-            temporal = datos[
-                columnas_base
-            ].copy()
-
-            temporal[
-                "Residuo"
-            ] = residuo
-
-            temporal[
-                "Tipo_Costo"
-            ] = tipo_costo
-
-            temporal[
-                "Monto"
-            ] = datos[
-                columna
-            ].apply(
-                limpiar_numero
-            )
-
-            registros_costos.append(
-                temporal
-            )
-
-        columna_toneladas = buscar_columna(
-            datos.columns,
-            f"Toneladas {residuo}",
-        )
-
-        if columna_toneladas is None:
-            raise ValueError(
-                "No se encontró la columna: "
-                f"Toneladas {residuo}"
-            )
-
+    for residuo, columna in mapa_residuos.items():
         temporal = datos[
-            columnas_base
+            [
+                "Fecha",
+                "Año",
+                "Mes_Num",
+                "Mes_Nombre",
+                "Periodo_Texto",
+                "Periodo_Orden",
+            ]
         ].copy()
 
-        temporal[
-            "Residuo"
-        ] = residuo
+        temporal["Residuo"] = residuo
+        temporal["Toneladas"] = datos[columna]
 
-        temporal[
-            "Toneladas"
-        ] = datos[
-            columna_toneladas
-        ].apply(
-            limpiar_numero
-        )
+        registros.append(temporal)
 
-        registros_toneladas.append(
-            temporal
-        )
-
-    costos = pd.concat(
-        registros_costos,
+    residuos_largo = pd.concat(
+        registros,
         ignore_index=True,
     )
 
-    toneladas_df = pd.concat(
-        registros_toneladas,
+    residuos_largo = residuos_largo[
+        residuos_largo["Toneladas"] > 0
+    ].copy()
+
+    return residuos_largo
+
+
+def preparar_componentes_ep_largo(datos):
+    registros = []
+
+    componentes = {
+        "Servicio fijo": "Servicio_fijo_MM",
+        "Transporte residuos": "Transporte_residuos_MM",
+        "Adicionales": "Adicionales_MM",
+    }
+
+    for componente, columna in componentes.items():
+        temporal = datos[
+            [
+                "Fecha",
+                "Año",
+                "Mes_Num",
+                "Mes_Nombre",
+                "Periodo_Texto",
+                "Periodo_Orden",
+            ]
+        ].copy()
+
+        temporal["Componente"] = componente
+        temporal["Monto_MM"] = datos[columna]
+
+        registros.append(temporal)
+
+    componentes_largo = pd.concat(
+        registros,
         ignore_index=True,
     )
 
-    costos = costos[
-        costos[
-            "Monto"
-        ] > 0
-    ].copy()
-
-    toneladas_df = toneladas_df[
-        toneladas_df[
-            "Toneladas"
-        ] > 0
-    ].copy()
-
-    return (
-        costos,
-        toneladas_df,
-    )
+    return componentes_largo
 
 
 # =========================================================
@@ -1345,97 +1821,81 @@ def seccion(titulo):
     )
 
 
-def tarjeta(
-    titulo,
-    valor,
-    subtitulo,
-    color,
-):
+def tarjeta(titulo, valor, subtitulo, color):
     st.markdown(
         (
-            '<div class="tarjeta">'
-
+            f'<div class="tarjeta tarjeta-{color}">'
             f'<div class="tarjeta-titulo">{titulo}</div>'
-
             f'<div class="tarjeta-valor {color}">{valor}</div>'
-
             f'<div class="tarjeta-subtitulo">{subtitulo}</div>'
-
             "</div>"
         ),
         unsafe_allow_html=True,
     )
 
 
-def aplicar_filtros(
-    datos,
-    anios,
-    residuos,
-    meses,
+def tarjeta_promedios_residuos(
+    promedio_traslados,
+    porcentaje_traslados,
+    promedio_disposicion,
+    porcentaje_disposicion,
 ):
-    salida = datos.copy()
-
-    if anios:
-        salida = salida[
-            salida[
-                "Año"
-            ].isin(
-                anios
-            )
-        ]
-
-    if residuos:
-        salida = salida[
-            salida[
-                "Residuo"
-            ].isin(
-                residuos
-            )
-        ]
-
-    if meses:
-        salida = salida[
-            salida[
-                "Mes_Nombre"
-            ].isin(
-                meses
-            )
-        ]
-
-    return salida.copy()
+    st.markdown(
+        (
+            '<div class="tarjeta tarjeta-amarillo">'
+            '<div class="tarjeta-titulo">'
+            'Promedio mensual<br>traslados y disposición'
+            '</div>'
+            '<div class="tarjeta-desglose">'
+            '<div class="tarjeta-desglose-fila">'
+            '<span class="tarjeta-desglose-concepto">Traslados</span>'
+            f'<span class="tarjeta-desglose-valor valor-traslado">'
+            f'{pesos_texto(promedio_traslados)} · '
+            f'{porcentaje(porcentaje_traslados)}'
+            '</span>'
+            '</div>'
+            '<div class="tarjeta-desglose-fila">'
+            '<span class="tarjeta-desglose-concepto">Disposición</span>'
+            f'<span class="tarjeta-desglose-valor valor-disposicion">'
+            f'{pesos_texto(promedio_disposicion)} · '
+            f'{porcentaje(porcentaje_disposicion)}'
+            '</span>'
+            '</div>'
+            '</div>'
+            '</div>'
+        ),
+        unsafe_allow_html=True,
+    )
 
 
-def formato_grafico(
-    figura,
-    altura=460,
-):
+def formato_grafico(figura, altura=400):
     figura.update_layout(
         height=altura,
-        plot_bgcolor="rgba(17, 24, 39, 0.92)",
-        paper_bgcolor="rgba(17, 24, 39, 0.92)",
+        plot_bgcolor="#f8fafc",
+        paper_bgcolor="#f8fafc",
 
         font=dict(
-            color="#e5e7eb",
+            color="#0f172a",
             size=13,
         ),
 
         title_font=dict(
             size=20,
-            color="#f8fafc",
+            color="#0f172a",
         ),
 
         legend=dict(
             font=dict(
-                color="#f8fafc",
+                color="#0f172a",
                 size=15,
             ),
 
             title_font=dict(
-                color="#f8fafc",
+                color="#0f172a",
                 size=14,
             ),
 
-            bgcolor="rgba(0,0,0,0)",
+            bgcolor="rgba(255,255,255,0)",
         ),
 
         margin=dict(
@@ -1446,64 +1906,294 @@ def formato_grafico(
         ),
 
         hoverlabel=dict(
-            bgcolor="#172033",
-            font_color="#f8fafc",
+            bgcolor="#ffffff",
+            font_color="#0f172a",
         ),
     )
 
     figura.update_xaxes(
         title_text="",
-
         tickfont=dict(
-            color="#cbd5e1",
+            color="#334155",
             size=11,
         ),
-
-        title_font=dict(
-            color="#e5e7eb",
-            size=12,
-        ),
-
-        gridcolor="rgba(148,163,184,.12)",
+        gridcolor="rgba(100,116,139,.22)",
     )
 
     figura.update_yaxes(
+        title_text="",
         tickfont=dict(
-            color="#cbd5e1",
+            color="#334155",
             size=11,
         ),
-
-        title_font=dict(
-            color="#e5e7eb",
-            size=12,
-        ),
-
-        gridcolor="rgba(148,163,184,.12)",
+        gridcolor="rgba(100,116,139,.22)",
     )
 
     return figura
 
+
+def aplicar_eje_millones_clp(figura):
+    figura.update_yaxes(
+        title_text="",
+        ticksuffix=" Millones CLP",
+        separatethousands=True,
+    )
+
+    return figura
+
+
+def aplicar_eje_toneladas(figura):
+    figura.update_yaxes(
+        title_text="",
+        ticksuffix=" t",
+        separatethousands=True,
+    )
+
+    return figura
+
+
+def filtrar_datos(datos, filtro_anios, filtro_meses):
+    salida = datos.copy()
+
+    if filtro_anios:
+        salida = salida[
+            salida["Año"].isin(filtro_anios)
+        ]
+
+    if filtro_meses:
+        salida = salida[
+            salida["Mes_Nombre"].isin(filtro_meses)
+        ]
+
+    return salida.copy()
+
+
+class _DriveFolderLinkParser(HTMLParser):
+    """Extrae enlaces desde una carpeta pública de Google Drive."""
+
+    def __init__(self):
+        super().__init__()
+        self.enlaces = []
+        self._href_actual = None
+        self._texto_actual = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag.lower() != "a":
+            return
+
+        href = dict(attrs).get("href")
+
+        if href:
+            self._href_actual = href
+            self._texto_actual = []
+
+    def handle_data(self, data):
+        if self._href_actual:
+            self._texto_actual.append(data)
+
+    def handle_endtag(self, tag):
+        if tag.lower() != "a" or not self._href_actual:
+            return
+
+        nombre = " ".join(
+            "".join(self._texto_actual).split()
+        ).strip()
+
+        self.enlaces.append(
+            (
+                self._href_actual,
+                nombre,
+            )
+        )
+
+        self._href_actual = None
+        self._texto_actual = []
+
+
+@st.cache_data(ttl=300, show_spinner=False)
+def listar_estados_pago_drive():
+    """Lista los PDF públicos de Drive sin descargarlos."""
+
+    url_embebida = (
+        "https://drive.google.com/embeddedfolderview"
+        f"?id={CARPETA_DRIVE_ESTADOS_PAGO_ID}"
+    )
+
+    solicitud = Request(
+        url_embebida,
+        headers={
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0 Safari/537.36"
+            )
+        },
+    )
+
+    with urlopen(
+        solicitud,
+        timeout=25,
+    ) as respuesta:
+        contenido_html = respuesta.read().decode(
+            "utf-8",
+            errors="ignore",
+        )
+
+    analizador = _DriveFolderLinkParser()
+    analizador.feed(contenido_html)
+
+    documentos_por_periodo = {}
+
+    for href, nombre_archivo in analizador.enlaces:
+        coincidencia_archivo = re.search(
+            r"https://drive\.google\.com/file/d/([-\w]{20,})/view",
+            href,
+        )
+
+        if not coincidencia_archivo:
+            continue
+
+        coincidencia_periodo = re.search(
+            r"EP[_\s-]*(20\d{2})[-_](0[1-9]|1[0-2])",
+            nombre_archivo,
+            flags=re.IGNORECASE,
+        )
+
+        if not coincidencia_periodo:
+            continue
+
+        archivo_id = coincidencia_archivo.group(1)
+        anio = int(coincidencia_periodo.group(1))
+        mes_numero = int(coincidencia_periodo.group(2))
+
+        documentos_por_periodo[
+            (
+                anio,
+                mes_numero,
+            )
+        ] = {
+            "id": archivo_id,
+            "nombre": nombre_archivo,
+            "anio": anio,
+            "mes_numero": mes_numero,
+            "mes": MESES[mes_numero],
+            "url": (
+                "https://drive.google.com/file/d/"
+                f"{archivo_id}/view"
+            ),
+        }
+
+    return sorted(
+        documentos_por_periodo.values(),
+        key=lambda archivo: (
+            archivo["anio"],
+            archivo["mes_numero"],
+        ),
+    )
+
+
+def mostrar_estados_pago_drive():
+    """Muestra los Estados de Pago en cuatro columnas por año."""
+
+    seccion("📄 Estados de Pago")
+
+    st.markdown(
+        (
+            '<div class="resumen">'
+            "Visualización EDP Mensual"
+            "</div>"
+        ),
+        unsafe_allow_html=True,
+    )
+
+    try:
+        documentos = listar_estados_pago_drive()
+
+    except Exception:
+        st.warning(
+            "No fue posible cargar temporalmente los Estados de Pago desde Drive. "
+            "Verifica que la carpeta y los archivos continúen compartidos como "
+            "'Cualquier persona con el enlace'."
+        )
+        return
+
+    if not documentos:
+        st.info(
+            "No se encontraron archivos con el formato "
+            "EP_AAAA-MM_Mes dentro de la carpeta compartida."
+        )
+        return
+
+    documentos_por_anio = {}
+
+    for documento in documentos:
+        documentos_por_anio.setdefault(
+            documento["anio"],
+            [],
+        ).append(documento)
+
+    anios = sorted(documentos_por_anio)
+
+    for inicio in range(0, len(anios), 4):
+        columnas = st.columns(4)
+
+        for indice_columna, columna in enumerate(columnas):
+            posicion = inicio + indice_columna
+
+            if posicion >= len(anios):
+                continue
+
+            anio = anios[posicion]
+            documentos_anio = documentos_por_anio[anio]
+
+            enlaces_html = []
+
+            for documento in documentos_anio:
+                enlaces_html.append(
+                    (
+                        f'<a class="ep-document-link" '
+                        f'href="{documento["url"]}" '
+                        f'target="_blank" rel="noopener noreferrer">'
+                        f'<span class="ep-document-icon">📄</span>'
+                        f'<span>{documento["mes"]}</span>'
+                        "</a>"
+                    )
+                )
+
+            with columna:
+                st.markdown(
+                    (
+                        '<div class="ep-year-card">'
+                        f'<div class="ep-year-title">{anio}</div>'
+                        '<div class="ep-document-list">'
+                        + "".join(enlaces_html)
+                        + "</div>"
+                        "</div>"
+                    ),
+                    unsafe_allow_html=True,
+                )
 
 # =========================================================
 # PANEL PRINCIPAL
 # =========================================================
 
 def mostrar_panel():
-    datos = cargar_datos(
-        ARCHIVO_EXCEL
-    )
+    ruta_excel = buscar_archivo_excel()
 
-    costos_base, toneladas_base = preparar_datos(
-        datos
-    )
+    if not ruta_excel:
+        raise FileNotFoundError(
+            "No se encontró el archivo Excel RESUMEN ESTADOS DE PAGO."
+        )
 
-    fecha_minima = datos[
-        "Fecha"
-    ].min()
+    with open(ruta_excel, "rb") as archivo_excel:
+        firma_excel = hashlib.sha256(
+            archivo_excel.read()
+        ).hexdigest()
 
-    fecha_maxima = datos[
-        "Fecha"
-    ].max()
+    datos = cargar_datos(ruta_excel, firma_excel)
+
+    fecha_minima = datos["Fecha"].min()
+    fecha_maxima = datos["Fecha"].max()
 
     # -----------------------------------------------------
     # ENCABEZADO
@@ -1517,56 +2207,46 @@ def mostrar_panel():
     )
 
     with col_titulo:
+        usuario_actual = st.session_state.get("usuario", "")
 
         st.markdown(
             (
+                '<div class="encabezado-panel">'
                 '<div class="titulo">'
-                "♻️ Análisis consolidado de residuos no peligrosos"
+                "📊 Resumen Ejecutivo de Estados de Pago"
                 "</div>"
-            ),
-            unsafe_allow_html=True,
-        )
 
-        st.markdown(
-            (
                 '<div class="subtitulo">'
-                "Panel ejecutivo para el seguimiento operacional, "
-                "económico y contractual de RAD, corteza, escoria y ceniza."
+                f"<b>Contrato {CONTRATO}</b> | {NOMBRE_CONTRATO} | {CENTRO_OPERACIONAL}"
                 "</div>"
-            ),
-            unsafe_allow_html=True,
-        )
 
-        st.markdown(
-            (
+                '<div class="badges-header">'
+                f'<span class="badge-header badge-verde">Contrato {CONTRATO}</span>'
+                '<span class="badge-header">Estados de Pago</span>'
+                '<span class="badge-header">Transporte de Residuos</span>'
+                '<span class="badge-header">Toneladas Gestionadas</span>'
+                '<span class="badge-header badge-amarillo">Planta Mulchén</span>'
+                f'<span class="badge-header">Usuario: {usuario_actual}</span>'
+                "</div>"
+
                 '<div class="metadata">'
-
-                f"<b>Período analizado:</b> "
-                f"{nombre_periodo(fecha_minima)} a "
-                f"{nombre_periodo(fecha_maxima)}"
-
+                f"<b>Período analizado:</b> {nombre_periodo(fecha_minima)} a {nombre_periodo(fecha_maxima)}"
                 " &nbsp;|&nbsp; "
-
-                f"<b>Última actualización:</b> "
-                f"{nombre_periodo(fecha_maxima)}"
-
+                f"<b>Última actualización:</b> {nombre_periodo(fecha_maxima)}"
                 " &nbsp;|&nbsp; "
-
-                "<b>Fuente:</b> "
-                "Control mensual de residuos no peligrosos"
-
+                f"<b>Fuente:</b> {escape(os.path.basename(ruta_excel))}"
+                "</div>"
                 "</div>"
             ),
             unsafe_allow_html=True,
         )
 
     with col_logo:
+        ruta_logo = buscar_imagen_por_nombre(LOGO_SUPERIOR_BASE)
 
-        if os.path.exists(
-            LOGO_SUPERIOR
-        ):
+        if ruta_logo:
             st.image(
-                LOGO_SUPERIOR,
+                ruta_logo,
                 width=220,
             )
 
@@ -1574,138 +2254,161 @@ def mostrar_panel():
     # FILTROS
     # -----------------------------------------------------
 
-    seccion(
-        "🔎 Filtros de análisis"
-    )
+    seccion("🔎 Filtros de análisis")
 
-    filtro1, filtro2, filtro3, filtro4 = st.columns(
-        4
-    )
+    filtro1, filtro2 = st.columns(2)
 
     with filtro1:
-
         filtro_anios = st.multiselect(
             "Año",
-            sorted(
-                datos[
-                    "Año"
-                ].unique()
-            ),
+            sorted(datos["Año"].unique()),
         )
 
     with filtro2:
-
-        filtro_residuos = st.multiselect(
-            "Residuo",
-            RESIDUOS,
-        )
-
-    with filtro3:
-
-        filtro_tipos = st.multiselect(
-            "Tipo de costo",
-            TIPOS_COSTO,
-        )
-
-    with filtro4:
-
         filtro_meses = st.multiselect(
             "Mes",
             [
                 mes
                 for mes in MESES.values()
-                if mes
-                in datos[
-                    "Mes_Nombre"
-                ].unique()
+                if mes in datos["Mes_Nombre"].unique()
             ],
         )
 
-    costos = aplicar_filtros(
-        costos_base,
+    datos_filtrados = filtrar_datos(
+        datos,
         filtro_anios,
-        filtro_residuos,
         filtro_meses,
     )
 
-    ton = aplicar_filtros(
-        toneladas_base,
-        filtro_anios,
-        filtro_residuos,
-        filtro_meses,
+    if datos_filtrados.empty:
+        st.warning("No existen datos para los filtros seleccionados.")
+        return
+
+    residuos_largo = preparar_residuos_largo(datos_filtrados)
+    componentes_largo = preparar_componentes_ep_largo(datos_filtrados)
+
+    total_servicio_fijo = float(datos_filtrados["Servicio_fijo"].sum())
+    # El resumen utiliza todo el período seleccionado, incluido 2023.
+    # No se reutiliza ningún subconjunto definido para gráficos.
+    datos_resumen_transporte = datos_filtrados.copy()
+
+    total_transporte = float(
+        datos_resumen_transporte["Transporte_residuos"].sum()
     )
-
-    if filtro_tipos:
-
-        costos = costos[
-            costos[
-                "Tipo_Costo"
-            ].isin(
-                filtro_tipos
-            )
-        ]
-
-    # -----------------------------------------------------
-    # CALCULOS
-    # -----------------------------------------------------
-
-    total_costos = float(
-        costos[
-            "Monto"
-        ].sum()
-    )
-
-    total_toneladas = float(
-        ton[
-            "Toneladas"
-        ].sum()
-    )
-
-    total_traslado = float(
-        costos.loc[
-            costos[
-                "Tipo_Costo"
-            ] == "Traslado",
-            "Monto",
-        ].sum()
-    )
-
     total_disposicion = float(
-        costos.loc[
-            costos[
-                "Tipo_Costo"
-            ] == "Disposición",
-            "Monto",
-        ].sum()
+        datos_resumen_transporte["Disposicion_residuos"].sum()
+    )
+    total_traslados_planilla = float(
+        datos_resumen_transporte["Traslados_residuos"].sum()
     )
 
-    cantidad_meses = len(
-        set(
-            costos[
-                "Periodo"
-            ]
-        )
-        |
-        set(
-            ton[
-                "Periodo"
-            ]
-        )
+    # En la planilla existen pequeñas diferencias de centavos/pesos entre
+    # Transporte y la suma Disposición + Traslado. Cuando la diferencia es
+    # solo de redondeo, se incorpora al total de traslados para que el
+    # desglose coincida exactamente con el total informado.
+    diferencia_desglose_transporte = (
+        total_transporte
+        - total_disposicion
+        - total_traslados_planilla
     )
 
-    participacion_traslado = (
-        total_traslado
-        / total_costos
-        * 100
-        if total_costos
+    if abs(diferencia_desglose_transporte) <= 1_000:
+        total_traslados = (
+            total_traslados_planilla
+            + diferencia_desglose_transporte
+        )
+    else:
+        total_traslados = total_traslados_planilla
+
+    total_adicionales = float(datos_filtrados["Adicionales"].sum())
+    total_neto = float(datos_filtrados["Total_neto"].sum())
+    total_iva = float(datos_filtrados["IVA_19"].sum())
+    total_bruto = float(datos_filtrados["Total_bruto"].sum())
+    total_toneladas = float(datos_filtrados["Ton_Total"].sum())
+    total_rad = float(datos_filtrados["Ton_RAD"].sum())
+    total_corteza = float(datos_filtrados["Ton_Corteza_G3"].sum())
+    total_escoria = float(datos_filtrados["Ton_Escoria"].sum())
+    total_cenizas = float(datos_filtrados["Ton_Cenizas"].sum())
+
+    total_reembolso = float(datos_filtrados["Reembolso"].sum())
+    total_insumos = float(
+        datos_filtrados["Insumos_arriendo_herramientas"].sum()
+    )
+    total_horas_extras = float(datos_filtrados["Horas_extras"].sum())
+    total_bonificaciones = float(datos_filtrados["Bonificaciones"].sum())
+    total_cot_adicionales = float(datos_filtrados["Cot_adicionales"].sum())
+
+    cantidad_meses = datos_filtrados["Periodo_Orden"].nunique()
+
+    promedio_bruto_mensual = (
+        total_bruto / cantidad_meses
+        if cantidad_meses
         else 0
     )
 
-    participacion_disposicion = (
-        total_disposicion
-        / total_costos
-        * 100
-        if total_costos
+    promedio_neto_mensual = (
+        total_neto / cantidad_meses
+        if cantidad_meses
+        else 0
+    )
+
+    promedio_servicio_fijo_mensual = (
+        total_servicio_fijo / cantidad_meses
+        if cantidad_meses
+        else 0
+    )
+
+    promedio_transporte_mensual = (
+        total_transporte / cantidad_meses
+        if cantidad_meses
+        else 0
+    )
+
+    promedio_traslados_mensual = (
+        total_traslados / cantidad_meses
+        if cantidad_meses
+        else 0
+    )
+
+    promedio_disposicion_mensual = (
+        total_disposicion / cantidad_meses
+        if cantidad_meses
+        else 0
+    )
+
+    porcentaje_traslados_transporte = (
+        total_traslados / total_transporte * 100
+        if total_transporte
+        else 0
+    )
+
+    porcentaje_disposicion_transporte = (
+        total_disposicion / total_transporte * 100
+        if total_transporte
+        else 0
+    )
+
+    promedio_ton_mensual = (
+        total_toneladas / cantidad_meses
+        if cantidad_meses
+        else 0
+    )
+
+    costo_transporte_por_ton = (
+        total_transporte / total_toneladas
+        if total_toneladas
+        else 0
+    )
+
+    participacion_transporte = (
+        total_transporte / total_neto * 100
+        if total_neto
+        else 0
+    )
+
+    participacion_adicionales = (
+        total_adicionales / total_neto * 100
+        if total_neto
         else 0
     )
 
@@ -1713,277 +2416,510 @@ def mostrar_panel():
     # INDICADORES
     # -----------------------------------------------------
 
+    seccion("📌 Indicadores ejecutivos")
+
     indicadores = [
         (
-            "Costo total acumulado",
-            pesos(total_costos),
-            "Disposición y traslado",
+            "Total neto acumulado",
+            pesos_html(total_neto),
+            "Base antes de IVA",
             "verde",
         ),
-
         (
-            "Toneladas gestionadas",
-            toneladas(total_toneladas),
-            "Total del período seleccionado",
-            "azul",
-        ),
-
-        (
-            "Costo total de traslado",
-            pesos(total_traslado),
-            f"{porcentaje(participacion_traslado)} del costo total",
-            "naranjo",
-        ),
-
-        (
-            "Costo de disposición final",
-            pesos(total_disposicion),
-            f"{porcentaje(participacion_disposicion)} del costo total",
+            "IVA 19%",
+            pesos_html(total_iva),
+            "Impuesto acumulado",
             "amarillo",
         ),
-
         (
-            "Promedio mensual de costos",
-            pesos(
-                total_costos
-                / cantidad_meses
-                if cantidad_meses
-                else 0
-            ),
+            "Valor total acumulado",
+            pesos_html(total_bruto),
+            "Monto final estados de pago",
+            "azul",
+        ),
+        (
+            "Valor promedio mensual<br>(Neto sin IVA)",
+            pesos_html(promedio_neto_mensual),
             f"{cantidad_meses} meses considerados",
+            "morado",
+        ),
+        (
+            "Servicio fijo<br>(Neto)",
+            pesos_html(total_servicio_fijo),
+            "Monto contractual acumulado",
             "verde",
         ),
-
         (
-            "Promedio mensual de toneladas",
-            toneladas(
-                total_toneladas
-                / cantidad_meses
-                if cantidad_meses
-                else 0
-            ),
-            f"{cantidad_meses} meses considerados",
-            "azul",
-        ),
-
-        (
-            "Participación del traslado",
-            porcentaje(participacion_traslado),
-            "Incidencia sobre el costo total",
+            "Transporte residuos<br>(Neto)",
+            pesos_html(total_transporte),
+            f"{porcentaje(participacion_transporte)} del neto",
             "naranjo",
         ),
-
         (
-            "Participación de la disposición",
-            porcentaje(participacion_disposicion),
-            "Incidencia sobre el costo total",
+            "Adicionales<br>(Neto)",
+            pesos_html(total_adicionales),
+            f"{porcentaje(participacion_adicionales)} del neto",
             "amarillo",
+        ),
+        (
+            "Promedio servicio fijo mensual<br>(Neto)",
+            pesos_html(promedio_servicio_fijo_mensual),
+            f"{cantidad_meses} meses considerados",
+            "azul",
         ),
     ]
 
-    seccion(
-        "📌 Indicadores ejecutivos"
-    )
-
-    for inicio in range(
-        0,
-        8,
-        4,
-    ):
-        columnas = st.columns(
-            4
-        )
+    for inicio in range(0, 8, 4):
+        columnas = st.columns(4)
 
         for columna, datos_tarjeta in zip(
             columnas,
-            indicadores[
-                inicio:inicio + 4
-            ],
+            indicadores[inicio:inicio + 4],
         ):
             with columna:
-
-                tarjeta(
-                    *datos_tarjeta
-                )
+                tarjeta(*datos_tarjeta)
 
     # -----------------------------------------------------
-    # RESUMEN EJECUTIVO
+    # RESUMEN
     # -----------------------------------------------------
 
-    seccion(
-        "📝 Resumen ejecutivo"
-    )
+    seccion("📝 Resumen ejecutivo")
 
     st.markdown(
         (
             '<div class="resumen">'
+            f"Entre <b>{nombre_periodo(fecha_minima)}</b> y "
+            f"<b>{nombre_periodo(fecha_maxima)}</b>, el contrato registra "
+            f"un total neto acumulado de <b>{pesos_html(total_neto)}</b>, "
+            f"un IVA acumulado de <b>{pesos_html(total_iva)}</b> "
+            f"y un total bruto de <b>{pesos_html(total_bruto)}</b>.<br><br>"
 
-            "<b>Lectura ejecutiva del período.</b> "
+            f"El servicio fijo representa <b>{pesos_html(total_servicio_fijo)}</b>, "
+            f"el transporte de residuos alcanza <b>{pesos_html(total_transporte)}</b> "
+            f"y los adicionales acumulan <b>{pesos_html(total_adicionales)}</b>.<br><br>"
 
-            f"El costo acumulado alcanza "
-            f"<b>{pesos(total_costos)}</b>, "
+            f"Durante el período seleccionado, el valor total de transporte "
+            f"de residuos asciende a <b>{pesos_html(total_transporte)}</b>, "
+            f"compuesto por <b>{pesos_html(total_disposicion)}</b> en disposición "
+            f"y <b>{pesos_html(total_traslados)}</b> en traslados.<br><br>"
 
-            f"con una participación del traslado equivalente al "
-            f"<b>{porcentaje(participacion_traslado)}</b> "
-
-            f"y una incidencia de disposición final del "
-            f"<b>{porcentaje(participacion_disposicion)}</b>. "
-
-            f"Durante el período seleccionado se gestionaron "
-            f"<b>{toneladas(total_toneladas)}</b> "
-            "de residuos no peligrosos."
-
+            "<b>Hito relevante:</b> En <b>octubre 2023</b> se registra "
+            "un <b>retroactivo por modificación de tarifas de traslado de residuos</b>, "
+            "correspondiente al período informado, generando un aumento en los montos "
+            "asociados a transporte de residuos."
             "</div>"
         ),
         unsafe_allow_html=True,
     )
 
     # -----------------------------------------------------
-    # TONELADAS ACUMULADAS
+    # INDICADORES DE ADICIONALES
     # -----------------------------------------------------
 
-    seccion(
-        "⚖️ Toneladas acumuladas por residuo"
-    )
+    seccion("➕ Desglose de Adicionales")
 
-    for columna, residuo in zip(
-        st.columns(
-            4
+    tarjetas_adicionales = [
+        (
+            "Reembolso",
+            pesos_html(total_reembolso),
+            "Monto neto acumulado",
+            "azul",
         ),
-        RESIDUOS,
+        (
+            "Insumos, arriendo y herramientas",
+            pesos_html(total_insumos),
+            "Monto neto acumulado",
+            "naranjo",
+        ),
+        (
+            "Horas extras",
+            pesos_html(total_horas_extras),
+            "Monto neto acumulado",
+            "morado",
+        ),
+        (
+            "Bonificaciones",
+            pesos_html(total_bonificaciones),
+            "Monto neto acumulado",
+            "verde",
+        ),
+        (
+            "Cot. adicionales",
+            pesos_html(total_cot_adicionales),
+            "Monto neto acumulado",
+            "amarillo",
+        ),
+    ]
+
+    columnas_adicionales = st.columns(5)
+
+    for columna, datos_tarjeta in zip(
+        columnas_adicionales,
+        tarjetas_adicionales,
     ):
         with columna:
-
-            total_residuo = ton.loc[
-                ton[
-                    "Residuo"
-                ] == residuo,
-                "Toneladas",
-            ].sum()
-
-            tarjeta(
-                residuo,
-                toneladas(
-                    total_residuo
-                ),
-                "Toneladas gestionadas",
-                "azul",
-            )
+            tarjeta(*datos_tarjeta)
 
     # -----------------------------------------------------
-    # EVOLUCION MENSUAL
+    # INDICADORES DE TRANSPORTE DE RESIDUOS
     # -----------------------------------------------------
 
-    seccion(
-        "📈 Evolución mensual consolidada"
+    seccion("💰 Indicadores transporte de residuos")
+
+    tarjetas_residuos = [
+        (
+            "RAD",
+            toneladas(total_rad),
+            "Residuos domiciliarios",
+            "morado",
+        ),
+        (
+            "Corteza G3",
+            toneladas(total_corteza),
+            "Corteza gestionada",
+            "naranjo",
+        ),
+        (
+            "Escoria",
+            toneladas(total_escoria),
+            "Escoria gestionada",
+            "verde",
+        ),
+        (
+            "Cenizas",
+            toneladas(total_cenizas),
+            "Cenizas gestionadas",
+            "azul",
+        ),
+    ]
+
+    columnas_residuos = st.columns(4)
+
+    for columna, datos_tarjeta in zip(
+        columnas_residuos,
+        tarjetas_residuos,
+    ):
+        with columna:
+            tarjeta(*datos_tarjeta)
+
+    col_costo1, col_costo2, col_costo3, col_costo4 = st.columns(4)
+
+    with col_costo1:
+        tarjeta(
+            "Transporte de residuos<br>(Neto)",
+            pesos_html(total_transporte),
+            "Valor neto acumulado",
+            "naranjo",
+        )
+
+    with col_costo2:
+        tarjeta(
+            "Promedio mensual<br>transporte de residuos",
+            pesos_html(promedio_transporte_mensual),
+            f"{cantidad_meses} meses considerados",
+            "verde",
+        )
+
+    with col_costo3:
+        tarjeta(
+            "Toneladas promedio mensuales",
+            toneladas(promedio_ton_mensual),
+            f"{cantidad_meses} meses considerados",
+            "azul",
+        )
+
+    with col_costo4:
+        tarjeta_promedios_residuos(
+            promedio_traslados_mensual,
+            porcentaje_traslados_transporte,
+            promedio_disposicion_mensual,
+            porcentaje_disposicion_transporte,
+        )
+
+    # Gráfico mensual de disposición final y traslados.
+    tiene_detalle_costos_residuos = bool(
+        "Disposicion_residuos" in datos_filtrados.columns
+        and "Traslados_residuos" in datos_filtrados.columns
+        and (
+            datos_filtrados["Disposicion_residuos"].abs().sum() > 0
+            or datos_filtrados["Traslados_residuos"].abs().sum() > 0
+        )
     )
 
-    resumen_costos = (
-        costos
-        .groupby(
-            [
-                "Año",
-                "Mes",
+    if tiene_detalle_costos_residuos:
+        costos_residuos_mensual = (
+            datos_filtrados
+            .groupby(
+                [
+                    "Fecha",
+                    "Periodo_Texto",
+                    "Periodo_Orden",
+                ],
+                as_index=False,
+            )[
+                [
+                    "Disposicion_residuos",
+                    "Traslados_residuos",
+                ]
+            ]
+            .sum()
+            .sort_values("Fecha")
+        )
+
+        # No graficar como cero los meses anteriores que están vacíos
+        # en las columnas Disposicion y Traslado.
+        costos_residuos_mensual = costos_residuos_mensual[
+            (costos_residuos_mensual["Disposicion_residuos"] != 0)
+            | (costos_residuos_mensual["Traslados_residuos"] != 0)
+        ].copy()
+
+        costos_residuos_largo = costos_residuos_mensual.melt(
+            id_vars=[
+                "Fecha",
                 "Periodo_Texto",
+                "Periodo_Orden",
             ],
-            as_index=False,
-        )[
+            value_vars=[
+                "Disposicion_residuos",
+                "Traslados_residuos",
+            ],
+            var_name="Concepto",
+            value_name="Monto",
+        )
+
+        costos_residuos_largo["Concepto"] = costos_residuos_largo[
+            "Concepto"
+        ].map(
+            {
+                "Disposicion_residuos": "Disposición",
+                "Traslados_residuos": "Traslado",
+            }
+        )
+
+        costos_residuos_largo["Monto_MM"] = (
+            costos_residuos_largo["Monto"] / 1_000_000
+        )
+        costos_residuos_largo["Monto_Texto"] = costos_residuos_largo[
             "Monto"
-        ]
-        .sum()
-        .sort_values(
-            [
-                "Año",
-                "Mes",
-            ]
-        )
-    )
+        ].apply(pesos_texto)
 
-    resumen_ton = (
-        ton
-        .groupby(
-            [
-                "Año",
-                "Mes",
-                "Periodo_Texto",
-            ],
-            as_index=False,
-        )[
-            "Toneladas"
-        ]
-        .sum()
-        .sort_values(
-            [
-                "Año",
-                "Mes",
-            ]
-        )
-    )
+        orden_periodos_costos = costos_residuos_mensual[
+            "Periodo_Texto"
+        ].tolist()
 
-    figura_costos_linea = px.line(
-        resumen_costos,
+        figura_costos_residuos = px.line(
+            costos_residuos_largo,
+            x="Periodo_Texto",
+            y="Monto_MM",
+            color="Concepto",
+            markers=True,
+            title="Evolución mensual de disposición y traslado de residuos",
+            template="plotly_white",
+            category_orders={
+                "Periodo_Texto": orden_periodos_costos,
+                "Concepto": [
+                    "Disposición",
+                    "Traslado",
+                ],
+            },
+            color_discrete_map={
+                "Disposición": "#16a34a",
+                "Traslado": "#ea580c",
+            },
+            custom_data=["Monto_Texto"],
+        )
+
+        figura_costos_residuos.update_traces(
+            line=dict(width=3),
+            marker=dict(size=7),
+            hovertemplate=(
+                "<b>%{x}</b>"
+                "<br>%{fullData.name}: %{customdata[0]}"
+                "<extra></extra>"
+            ),
+        )
+
+        figura_costos_residuos = formato_grafico(
+            figura_costos_residuos,
+            410,
+        )
+        figura_costos_residuos = aplicar_eje_millones_clp(
+            figura_costos_residuos
+        )
+
+        st.plotly_chart(
+            figura_costos_residuos,
+            use_container_width=True,
+        )
+
+    else:
+        st.warning(
+            "La planilla cargada no contiene valores utilizables en las columnas "
+            "'Disposicion' y 'Traslado'. Verifica que el archivo Excel actualizado "
+            "esté guardado en la misma carpeta de la aplicación."
+        )
+
+    # -----------------------------------------------------
+    # EVOLUCION ESTADOS DE PAGO
+    # -----------------------------------------------------
+
+    seccion("📈 Evolución mensual de Estados de Pago")
+
+    figura_total_bruto = px.line(
+        datos_filtrados,
         x="Periodo_Texto",
-        y="Monto",
+        y="Total_bruto_MM",
         markers=True,
-        title="Evolución mensual del costo total",
-        template="plotly_dark",
+        title="Evolución mensual del total bruto",
+        template="plotly_white",
     )
 
-    figura_costos_linea.update_traces(
+    figura_total_bruto.update_traces(
         line=dict(
             width=3,
-            color="#22c55e",
+            color="#16a34a",
         ),
-
         marker=dict(
-            size=5,
+            size=6,
         ),
-
-        customdata=resumen_costos[
-            "Monto"
-        ].apply(
-            pesos
-        ),
-
+        customdata=datos_filtrados["Total_bruto"].apply(pesos_texto),
         hovertemplate=(
             "<b>%{x}</b>"
-            "<br>Costo total: %{customdata}"
+            "<br>Total bruto: %{customdata}"
             "<extra></extra>"
         ),
     )
 
+    figura_total_bruto = formato_grafico(figura_total_bruto, 380)
+    figura_total_bruto = aplicar_eje_millones_clp(figura_total_bruto)
+
     st.plotly_chart(
-        formato_grafico(
-            figura_costos_linea
-        ),
+        figura_total_bruto,
         use_container_width=True,
     )
 
-    figura_ton_linea = px.line(
-        resumen_ton,
+    figura_total_neto = px.line(
+        datos_filtrados,
         x="Periodo_Texto",
-        y="Toneladas",
+        y="Total_neto_MM",
         markers=True,
-        title="Evolución mensual de toneladas",
-        template="plotly_dark",
+        title="Evolución mensual del total neto",
+        template="plotly_white",
     )
 
-    figura_ton_linea.update_traces(
+    figura_total_neto.update_traces(
         line=dict(
             width=3,
-            color="#38bdf8",
+            color="#0284c7",
         ),
-
         marker=dict(
-            size=5,
+            size=6,
         ),
-
-        customdata=resumen_ton[
-            "Toneladas"
-        ].apply(
-            toneladas
+        customdata=datos_filtrados["Total_neto"].apply(pesos_texto),
+        hovertemplate=(
+            "<b>%{x}</b>"
+            "<br>Total neto: %{customdata}"
+            "<extra></extra>"
         ),
+    )
 
+    figura_total_neto = formato_grafico(figura_total_neto, 380)
+    figura_total_neto = aplicar_eje_millones_clp(figura_total_neto)
+
+    st.plotly_chart(
+        figura_total_neto,
+        use_container_width=True,
+    )
+
+    figura_adicionales = px.line(
+        datos_filtrados,
+        x="Periodo_Texto",
+        y="Adicionales_MM",
+        markers=True,
+        title="Evolución mensual de adicionales",
+        template="plotly_white",
+    )
+
+    figura_adicionales.update_traces(
+        line=dict(
+            width=3,
+            color="#ca8a04",
+        ),
+        marker=dict(
+            size=6,
+        ),
+        customdata=datos_filtrados["Adicionales"].apply(pesos_texto),
+        hovertemplate=(
+            "<b>%{x}</b>"
+            "<br>Adicionales: %{customdata}"
+            "<extra></extra>"
+        ),
+    )
+
+    figura_adicionales = formato_grafico(figura_adicionales, 380)
+    figura_adicionales = aplicar_eje_millones_clp(figura_adicionales)
+
+    st.plotly_chart(
+        figura_adicionales,
+        use_container_width=True,
+    )
+
+    # -----------------------------------------------------
+    # COMPOSICION ESTADO DE PAGO
+    # -----------------------------------------------------
+
+    seccion("📊 Composición mensual del Estado de Pago")
+
+    figura_componentes = px.bar(
+        componentes_largo,
+        x="Periodo_Texto",
+        y="Monto_MM",
+        color="Componente",
+        barmode="stack",
+        title="Servicio fijo, transporte de residuos y adicionales",
+        template="plotly_white",
+    )
+
+    figura_componentes.update_layout(
+        colorway=[
+            "#4f46e5",
+            "#ea580c",
+            "#059669",
+        ]
+    )
+
+    figura_componentes = formato_grafico(figura_componentes, 420)
+    figura_componentes = aplicar_eje_millones_clp(figura_componentes)
+
+    st.plotly_chart(
+        figura_componentes,
+        use_container_width=True,
+    )
+
+    # -----------------------------------------------------
+    # TONELADAS
+    # -----------------------------------------------------
+
+    seccion("⚖️ Evolución mensual de toneladas gestionadas")
+
+    figura_ton_total = px.line(
+        datos_filtrados,
+        x="Periodo_Texto",
+        y="Ton_Total",
+        markers=True,
+        title="Toneladas totales gestionadas por mes",
+        template="plotly_white",
+    )
+
+    figura_ton_total.update_traces(
+        line=dict(
+            width=3,
+            color="#0284c7",
+        ),
+        marker=dict(
+            size=6,
+        ),
+        customdata=datos_filtrados["Ton_Total"].apply(toneladas),
         hovertemplate=(
             "<b>%{x}</b>"
             "<br>Toneladas: %{customdata}"
@@ -1991,199 +2927,166 @@ def mostrar_panel():
         ),
     )
 
+    figura_ton_total = formato_grafico(figura_ton_total, 380)
+    figura_ton_total = aplicar_eje_toneladas(figura_ton_total)
+
     st.plotly_chart(
-        formato_grafico(
-            figura_ton_linea
-        ),
+        figura_ton_total,
         use_container_width=True,
     )
 
-    # -----------------------------------------------------
-    # COMPOSICION MENSUAL DEL COSTO
-    # -----------------------------------------------------
-
-    seccion(
-        "🚛 Composición mensual del costo"
-    )
-
-    mensual_costos = (
-        costos
-        .groupby(
-            [
-                "Periodo_Texto",
-                "Tipo_Costo",
-            ],
-            as_index=False,
-        )[
-            "Monto"
-        ]
-        .sum()
-    )
-
-    figura_costos = px.bar(
-        mensual_costos,
-        x="Periodo_Texto",
-        y="Monto",
-        color="Tipo_Costo",
-        barmode="stack",
-        title="Traslado y disposición final por mes",
-        template="plotly_dark",
-        color_discrete_map=COLORES_COSTO,
-    )
-
-    st.plotly_chart(
-        formato_grafico(
-            figura_costos,
-            490,
-        ),
-        use_container_width=True,
-    )
-
-    # -----------------------------------------------------
-    # TONELADAS MENSUALES
-    # -----------------------------------------------------
-
-    seccion(
-        "⚖️ Toneladas mensuales por residuo"
-    )
-
-    mensual_ton = (
-        ton
-        .groupby(
-            [
-                "Periodo_Texto",
-                "Residuo",
-            ],
-            as_index=False,
-        )[
-            "Toneladas"
-        ]
-        .sum()
-    )
-
-    figura_ton = px.bar(
-        mensual_ton,
+    figura_residuos = px.bar(
+        residuos_largo,
         x="Periodo_Texto",
         y="Toneladas",
         color="Residuo",
         barmode="stack",
-        title="Composición mensual de toneladas gestionadas",
-        template="plotly_dark",
+        title="Composición mensual de toneladas por tipo de residuo",
+        template="plotly_white",
         color_discrete_map=COLORES_RESIDUOS,
     )
 
+    figura_residuos = formato_grafico(figura_residuos, 420)
+    figura_residuos = aplicar_eje_toneladas(figura_residuos)
+
     st.plotly_chart(
-        formato_grafico(
-            figura_ton,
-            490,
-        ),
+        figura_residuos,
         use_container_width=True,
     )
 
     # -----------------------------------------------------
-    # DISTRIBUCION PORCENTUAL
+    # DISTRIBUCION
     # -----------------------------------------------------
 
-    seccion(
-        "🥧 Distribución porcentual del servicio"
-    )
+    seccion("🥧 Distribución porcentual")
 
-    columna_pie_ton, columna_pie_costos = st.columns(
-        2
-    )
+    col_pie1, col_pie2 = st.columns(2)
 
-    resumen_pie_ton = (
-        ton
-        .groupby(
-            "Residuo",
-            as_index=False,
-        )[
-            "Toneladas"
-        ]
-        .sum()
-    )
+    with col_pie1:
+        resumen_residuos = (
+            residuos_largo
+            .groupby("Residuo", as_index=False)["Toneladas"]
+            .sum()
+        )
 
-    resumen_pie_costos = (
-        costos
-        .groupby(
-            "Residuo",
-            as_index=False,
-        )[
-            "Monto"
-        ]
-        .sum()
-    )
-
-    with columna_pie_ton:
-
-        figura_pie_ton = px.pie(
-            resumen_pie_ton,
+        figura_pie_residuos = px.pie(
+            resumen_residuos,
             names="Residuo",
             values="Toneladas",
-            hole=.56,
-            title="Participación de cada residuo sobre el tonelaje total",
-            template="plotly_dark",
+            hole=0.56,
+            title="Participación por tipo de residuo",
+            template="plotly_white",
             color="Residuo",
             color_discrete_map=COLORES_RESIDUOS,
         )
 
-        figura_pie_ton.update_traces(
+        figura_pie_residuos.update_traces(
             textposition="inside",
             textinfo="percent+label",
         )
 
         st.plotly_chart(
-            formato_grafico(
-                figura_pie_ton,
-                470,
-            ),
+            formato_grafico(figura_pie_residuos, 430),
             use_container_width=True,
         )
 
-    with columna_pie_costos:
-
-        figura_pie_costos = px.pie(
-            resumen_pie_costos,
-            names="Residuo",
-            values="Monto",
-            hole=.56,
-            title="Participación de cada residuo en disposición y traslado",
-            template="plotly_dark",
-            color="Residuo",
-            color_discrete_map=COLORES_RESIDUOS,
+    with col_pie2:
+        resumen_componentes = pd.DataFrame(
+            {
+                "Componente": [
+                    "Servicio fijo",
+                    "Transporte residuos",
+                    "Adicionales",
+                ],
+                "Monto": [
+                    total_servicio_fijo,
+                    total_transporte,
+                    total_adicionales,
+                ],
+            }
         )
 
-        figura_pie_costos.update_traces(
+        figura_pie_componentes = px.pie(
+            resumen_componentes,
+            names="Componente",
+            values="Monto",
+            hole=0.56,
+            title="Participación sobre el total neto",
+            template="plotly_white",
+        )
+
+        figura_pie_componentes.update_traces(
             textposition="inside",
             textinfo="percent+label",
         )
 
         st.plotly_chart(
-            formato_grafico(
-                figura_pie_costos,
-                470,
-            ),
+            formato_grafico(figura_pie_componentes, 430),
             use_container_width=True,
         )
 
     # -----------------------------------------------------
-    # PIE DE PAGINA DEL PANEL
+    # COMPARATIVO ANUAL
+    # -----------------------------------------------------
+
+    seccion("📆 Comparativo anual")
+
+    resumen_anual = (
+        datos_filtrados
+        .groupby("Año", as_index=False)
+        .agg(
+            Total_bruto=("Total_bruto", "sum"),
+        )
+    )
+
+    resumen_anual["Total_bruto_MM"] = resumen_anual["Total_bruto"] / 1_000_000
+
+    figura_anual = px.bar(
+        resumen_anual,
+        x="Año",
+        y="Total_bruto_MM",
+        title="Total bruto acumulado por año",
+        template="plotly_white",
+        text=resumen_anual["Total_bruto"].apply(pesos_texto),
+    )
+
+    figura_anual.update_traces(
+        marker_color="#16a34a",
+        textposition="outside",
+    )
+
+    figura_anual.update_xaxes(
+        dtick=1,
+    )
+
+    figura_anual = formato_grafico(figura_anual, 420)
+    figura_anual = aplicar_eje_millones_clp(figura_anual)
+
+    st.plotly_chart(
+        figura_anual,
+        use_container_width=True,
+    )
+
+    # -----------------------------------------------------
+    # ESTADOS DE PAGO MENSUALES
+    # -----------------------------------------------------
+
+    mostrar_estados_pago_drive()
+
+    # -----------------------------------------------------
+    # PIE
     # -----------------------------------------------------
 
     st.markdown(
         (
             '<div class="pie-pagina">'
-
             f"<b>Panel desarrollado por {AUTOR}</b>"
             "<br>"
-
-            f"{CARGO} | SAIVAM"
+            f"{CARGO} | {EMPRESA}"
             "<br>"
-
             f"Versión {VERSION} | "
             f"Última actualización: "
             f"{nombre_periodo(fecha_maxima)}"
-
             "</div>"
         ),
         unsafe_allow_html=True,
@@ -2195,40 +3098,26 @@ def mostrar_panel():
 # =========================================================
 
 aplicar_estilo_general()
-
-if not st.session_state.get(
-    "acceso_autorizado",
-    False,
-):
-    mostrar_acceso_restringido()
-    st.stop()
-
 agregar_sello_agua_panel()
+validar_acceso()
 
 try:
     mostrar_panel()
 
 except FileNotFoundError:
-
-    st.error(
-        "No se encontró la planilla Excel."
-    )
+    st.error("No se encontró la planilla Excel.")
 
     st.write(
-        "Verifica que el archivo esté en la misma carpeta "
-        "que app.py y mantenga exactamente este nombre:"
+        "Verifica que el archivo esté en la misma carpeta que streamlit_app.py "
+        "y que tenga uno de estos nombres:"
     )
 
     st.code(
-        ARCHIVO_EXCEL
+        "RESUMEN ESTADOS DE PAGO.xlsx\n"
+        "RESUMEN ESTADOS DE PAGO.xlsm\n"
+        "RESUMEN ESTADOS DE PAGO.xls"
     )
 
 except Exception as error:
-
-    st.error(
-        "Ocurrió un error al cargar la planilla."
-    )
-
-    st.exception(
-        error
-    )
+    st.error("Ocurrió un error al cargar la planilla.")
+    st.exception(error)
